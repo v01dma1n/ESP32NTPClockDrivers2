@@ -1,7 +1,7 @@
 # ESP32 NTP Clock drivers component.
 #
 # IDF-native analogue of https://github.com/v01dma1n/ESP32NTPClockDrivers.
-# For VFDWhisperer the relevant driver is DispDriverPT6315 (Sony HT-CT550W
+# For MoodWhisperer the relevant driver is DispDriverPT6315 (Sony HT-CT550W
 # front panel: PT6315 controller + 10x 16-segment Union Jack glass +
 # 10 per-digit annunciators + 8 top-row annunciators on DIG1).
 
