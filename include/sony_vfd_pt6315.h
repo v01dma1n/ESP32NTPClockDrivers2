@@ -1,7 +1,7 @@
 // sony_vfd_pt6315.h — low-level PT6315 driver for the Sony HT-CT550W glass.
 //
 // IDF-native reimplementation of the Arduino SonyVFD library. Only the
-// methods VFDWhisperer needs are kept — text writing, per-segment writes,
+// methods MoodWhisperer needs are kept — text writing, per-segment writes,
 // annunciator control, brightness, refresh. The marquee logic is omitted
 // because ScrollingTextAnimation already handles scrolling above this layer.
 //
