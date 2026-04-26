@@ -10,6 +10,7 @@ idf_component_register(
         "src/sony_vfd_pt6315.cpp"
         "src/sony_vfd_font.cpp"
         "src/disp_driver_pt6315.cpp"
+        "src/ds1307_driver.cpp"
     INCLUDE_DIRS
         "include"
     REQUIRES
