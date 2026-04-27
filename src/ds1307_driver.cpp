@@ -47,7 +47,7 @@ bool Ds1307Driver::init() {
     i2c_param_config(_port, &conf);
 
     esp_err_t err = i2c_driver_install(_port, I2C_MODE_MASTER, 0, 0, 0);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_FAIL) {
         LOGERR("DS1307 I2C install failed: %d", (int)err);
         return false;
     }
