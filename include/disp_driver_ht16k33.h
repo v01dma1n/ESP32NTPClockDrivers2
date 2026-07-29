@@ -52,6 +52,7 @@ public:
 
 private:
     void _writeCmd(uint8_t cmd);
+    static uint8_t fontByte(char c);
 
     i2c_port_t _port;
     int        _sda, _scl;

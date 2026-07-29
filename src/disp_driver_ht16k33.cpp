@@ -28,10 +28,10 @@ const uint8_t DispDriverHT16K33::s_font[] = {
     0b00111110, 0b00101010, 0b01110110, 0b01101110, 0b01011011              //  VWXYZ
 };
 
-static uint8_t fontByte(char c) {
+uint8_t DispDriverHT16K33::fontByte(char c) {
     char u = (char)toupper((unsigned char)c);
     if (u < ' ' || u > 'Z') return 0;
-    return DispDriverHT16K33::s_font[(int)(u - ' ')];
+    return s_font[(int)(u - ' ')];
 }
 
 DispDriverHT16K33::DispDriverHT16K33(i2c_port_t port, int sda, int scl,
