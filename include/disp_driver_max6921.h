@@ -43,11 +43,14 @@ public:
     // gridMap: array of 20-bit grid-enable masks, one per digit position.
     // digitCount: length of gridMap (and the display's character count).
     // segMap: per-display wiring of segment lines to OUT0..OUT19.
-    // host: which IDF SPI peripheral to use (defaults to SPI3_HOST = VSPI).
+    // host: which IDF SPI peripheral to use. No default -- SPI3_HOST
+    // (VSPI) only exists on dual-SPI targets like the classic ESP32;
+    // single-SPI targets (e.g. ESP32-C3) only have SPI2_HOST. Callers
+    // must pick what's valid for their target.
     DispDriverMAX6921(int sclk, int miso, int mosi, int ss, int blank,
                       const unsigned long* gridMap, int digitCount,
                       const Max6921SegmentMap& segMap,
-                      spi_host_device_t host = SPI3_HOST);
+                      spi_host_device_t host);
     ~DispDriverMAX6921() override;
 
     // --- IDisplayDriver ------------------------------------------------------

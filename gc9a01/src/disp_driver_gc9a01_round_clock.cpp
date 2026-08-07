@@ -1,0 +1,559 @@
+#include "disp_driver_gc9a01_round_clock.h"
+
+#include "esp_log.h"
+#include "esp_lcd_panel_vendor.h"
+#include "esp_lcd_gc9a01.h"
+#include "esp_lvgl_port.h"
+#include "esp_timer.h"
+#include "driver/spi_master.h"
+#include "driver/gpio.h"
+
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
+static const char* TAG = "disp_gc9a01";
+
+// ---- Pin mapping, confirmed working on this board (see
+// gc9a01_round_display_test's bring-up notes) ----
+#define LCD_SPI_HOST    SPI2_HOST
+#define PIN_LCD_SCLK    GPIO_NUM_6
+#define PIN_LCD_MOSI    GPIO_NUM_7
+#define PIN_LCD_MISO    GPIO_NUM_NC   // display is write-only, no MISO
+#define PIN_LCD_CS      GPIO_NUM_10
+#define PIN_LCD_DC      GPIO_NUM_2
+#define PIN_LCD_RST     GPIO_NUM_NC   // no dedicated reset line on this board
+#define PIN_LCD_BL      GPIO_NUM_3
+
+#define LCD_H_RES       240
+#define LCD_V_RES       240
+#define LCD_BITS_PER_PIXEL 16
+#define LCD_SPI_CLOCK_HZ   (40 * 1000 * 1000)
+
+#define CLOCK_CENTER_X   (LCD_H_RES / 2)
+#define CLOCK_CENTER_Y   (LCD_V_RES / 2)
+#define HOUR_HAND_LEN    55
+#define MIN_HAND_LEN     85
+#define SEC_HAND_LEN     100
+
+#define TIME_DIGIT_W 20
+#define TIME_COLON_W 8
+#define TIME_ROW_Y   60
+
+static lv_color_t copperColor() { return lv_color_hex(0xB87333); }
+
+DispDriverGc9a01RoundClock::DispDriverGc9a01RoundClock() {
+    std::memset(_statusBuf, 0, sizeof(_statusBuf));
+}
+
+void DispDriverGc9a01RoundClock::setBrandText(const char* line1, const char* line2) {
+    if (line1) {
+        std::strncpy(_brandLine1, line1, sizeof(_brandLine1) - 1);
+        _brandLine1[sizeof(_brandLine1) - 1] = '\0';
+    }
+    if (line2) {
+        std::strncpy(_brandLine2, line2, sizeof(_brandLine2) - 1);
+        _brandLine2[sizeof(_brandLine2) - 1] = '\0';
+    }
+}
+
+// --- Panel + LVGL bring-up ---------------------------------------------------
+
+void DispDriverGc9a01RoundClock::begin() {
+    if (_began) return;
+
+    ESP_LOGI(TAG, "configuring backlight on GPIO%d", PIN_LCD_BL);
+    gpio_config_t bl_cfg = {};
+    bl_cfg.pin_bit_mask = 1ULL << PIN_LCD_BL;
+    bl_cfg.mode = GPIO_MODE_OUTPUT;
+    ESP_ERROR_CHECK(gpio_config(&bl_cfg));
+    gpio_set_level(PIN_LCD_BL, 1);
+
+    ESP_LOGI(TAG, "initializing SPI bus on SCLK=%d MOSI=%d", PIN_LCD_SCLK, PIN_LCD_MOSI);
+    spi_bus_config_t buscfg = {};
+    buscfg.sclk_io_num = PIN_LCD_SCLK;
+    buscfg.mosi_io_num = PIN_LCD_MOSI;
+    buscfg.miso_io_num = PIN_LCD_MISO;
+    buscfg.quadwp_io_num = -1;
+    buscfg.quadhd_io_num = -1;
+    buscfg.max_transfer_sz = LCD_H_RES * 40 * sizeof(uint16_t);
+    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO));
+
+    ESP_LOGI(TAG, "attaching panel IO, CS=%d DC=%d", PIN_LCD_CS, PIN_LCD_DC);
+    esp_lcd_panel_io_spi_config_t io_config = GC9A01_PANEL_IO_SPI_CONFIG(
+        PIN_LCD_CS, PIN_LCD_DC, nullptr, nullptr);
+    io_config.pclk_hz = LCD_SPI_CLOCK_HZ;
+    io_config.lcd_cmd_bits = 8;
+    io_config.lcd_param_bits = 8;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST,
+                                              &io_config, &_ioHandle));
+
+    ESP_LOGI(TAG, "creating GC9A01 panel, RST=%d", PIN_LCD_RST);
+    esp_lcd_panel_dev_config_t panel_config = {};
+    panel_config.reset_gpio_num = PIN_LCD_RST;
+    panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR; // confirmed by test; RGB swaps red/blue
+    panel_config.bits_per_pixel = LCD_BITS_PER_PIXEL;
+    ESP_ERROR_CHECK(esp_lcd_new_panel_gc9a01(_ioHandle, &panel_config, &_panelHandle));
+
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(_panelHandle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(_panelHandle));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(_panelHandle, true));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(_panelHandle, true));
+
+    ESP_LOGI(TAG, "starting LVGL port");
+    const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
+
+    lvgl_port_display_cfg_t disp_cfg = {};
+    disp_cfg.io_handle = _ioHandle;
+    disp_cfg.panel_handle = _panelHandle;
+    disp_cfg.buffer_size = LCD_H_RES * 40;
+    disp_cfg.double_buffer = true;
+    disp_cfg.hres = LCD_H_RES;
+    disp_cfg.vres = LCD_V_RES;
+    disp_cfg.monochrome = false;
+    disp_cfg.color_format = LV_COLOR_FORMAT_RGB565;
+    // This physical panel needs a horizontal mirror to render right-reading —
+    // must be set here (not via a separate esp_lcd_panel_mirror() call before
+    // lvgl_port_add_disp()) because lvgl_port_add_disp() re-applies orientation
+    // from this struct internally, silently overwriting anything set earlier.
+    disp_cfg.rotation.mirror_x = true;
+    disp_cfg.flags.buff_dma = true;
+    disp_cfg.flags.swap_bytes = true;
+    lv_disp_t* disp = lvgl_port_add_disp(&disp_cfg);
+    (void)disp;
+
+    ESP_LOGI(TAG, "building UI");
+    lvgl_port_lock(0);
+    buildUi();
+    lvgl_port_unlock();
+
+    _tickTimer = lv_timer_create(tickTimerCb, 30, this);
+
+    _began = true;
+}
+
+// --- UI construction ---------------------------------------------------------
+
+// Fills out[0..count-1] with a linear interpolation from `from` to `to`
+// (inclusive at both ends). Used for both the width and radius-boundary
+// ramps below.
+static void fillIntRamp(int16_t out[], int count, int16_t from, int16_t to) {
+    if (count == 1) { out[0] = from; return; } // avoid divide-by-zero below
+    for (int i = 0; i < count; i++) {
+        out[i] = (int16_t)(from + (int32_t)(to - from) * i / (count - 1));
+    }
+}
+
+// Fills out[0..count-1] with a color ramp from `from` to `to` using
+// lv_color_mix() (mix=255 -> full first arg, 0 -> full second arg) instead
+// of hand-picked hex stops, so the segment count can change without
+// re-deriving intermediate colors by hand.
+static void fillColorRamp(lv_color_t out[], int count, lv_color_t from, lv_color_t to) {
+    if (count == 1) { out[0] = from; return; } // avoid divide-by-zero below
+    for (int i = 0; i < count; i++) {
+        uint8_t mix = (uint8_t)(255 * (count - 1 - i) / (count - 1));
+        out[i] = lv_color_mix(from, to, mix);
+    }
+}
+
+// Fills out[0..segCount] with the segCount+1 radius boundaries (0 to
+// total_len) that split a hand of length total_len into segCount equal
+// segments — see setTaperedHand().
+static void fillRadii(int16_t out[], int segCount, int16_t total_len) {
+    for (int i = 0; i <= segCount; i++) {
+        out[i] = (int16_t)((int32_t)total_len * i / segCount);
+    }
+}
+
+// Creates the `count` line objects for one tapered hand (base -> tip).
+// widths[i]/colors[i] are used for segs[i] — see setTaperedHand() for how
+// the segments are positioned along the hand each tick. A plain lv_line
+// stroke can't have a smooth gradient along its length, so colors[] fakes
+// one with `count` discrete shades, same trick as the width taper.
+static void createTaperedHand(lv_obj_t* parent, lv_obj_t* segs[],
+                               const int16_t widths[], const lv_color_t colors[], int count) {
+    for (int i = 0; i < count; i++) {
+        segs[i] = lv_line_create(parent);
+        lv_obj_set_style_line_width(segs[i], widths[i], 0);
+        lv_obj_set_style_line_color(segs[i], colors[i], 0);
+        lv_obj_set_style_line_rounded(segs[i], true, 0);
+    }
+}
+
+static lv_obj_t* createTimeSlot(lv_obj_t* parent, int16_t width, int16_t x_offset, const char* text) {
+    lv_obj_t* lbl = lv_label_create(parent);
+    lv_obj_set_width(lbl, width);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_obj_align(lbl, LV_ALIGN_CENTER, x_offset, TIME_ROW_Y);
+    if (text) lv_label_set_text(lbl, text);
+    return lbl;
+}
+
+void DispDriverGc9a01RoundClock::buildUi() {
+    // --- boot screen: status text line (shown until RUNNING_NORMAL) ---
+    _bootScreen = lv_scr_act();
+    lv_obj_set_style_bg_color(_bootScreen, lv_color_black(), 0);
+
+    _statusLabel = lv_label_create(_bootScreen);
+    lv_obj_set_width(_statusLabel, 200);
+    lv_label_set_long_mode(_statusLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(_statusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(_statusLabel, lv_color_white(), 0);
+    lv_obj_center(_statusLabel);
+    lv_label_set_text(_statusLabel, "");
+
+    // --- watch face: its own screen, loaded via showClockFace() ---
+    _faceScreen = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(_faceScreen, lv_color_black(), 0);
+
+    // Sunburst dial: a subtle radial gradient (warm dark center fading to
+    // black at the edge) rather than a flat fill, like a brushed/guilloché
+    // watch dial. The lv_grad_dsc_t must outlive this function (LVGL's
+    // style system stores the pointer, not a copy of the struct), hence
+    // `static` here rather than a local.
+    static lv_grad_dsc_t s_dialGrad;
+    static const lv_color_t kDialGradStops[2] = { lv_color_hex(0x3A2E22), lv_color_black() };
+    lv_grad_init_stops(&s_dialGrad, kDialGradStops, nullptr, nullptr, 2);
+    lv_grad_radial_init(&s_dialGrad, CLOCK_CENTER_X, CLOCK_CENTER_Y,
+                         CLOCK_CENTER_X + 116, CLOCK_CENTER_Y, LV_GRAD_EXTEND_PAD);
+    lv_obj_set_style_bg_grad(_faceScreen, &s_dialGrad, 0);
+
+    // outer bezel ring
+    lv_obj_t* ring = lv_obj_create(_faceScreen);
+    lv_obj_remove_style_all(ring);
+    lv_obj_set_size(ring, 232, 232);
+    lv_obj_center(ring);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(ring, 2, 0);
+    lv_obj_set_style_border_color(ring, copperColor(), 0);
+
+    // hour tick marks — 12/3/6/9 (cardinal) drawn thicker and longer than
+    // the other 8
+    for (int i = 0; i < 12; i++) {
+        bool cardinal = (i % 3 == 0);
+        float rad = i * 30.0f * ((float)M_PI / 180.0f);
+        int16_t r_out = cardinal ? 114 : 112;
+        int16_t r_in = cardinal ? 92 : 98;
+        static lv_point_precise_t tick_pts[12][2];
+        tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
+        tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
+        tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
+        tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
+
+        lv_obj_t* tick = lv_line_create(_faceScreen);
+        lv_obj_set_pos(tick, 0, 0);
+        lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
+        lv_line_set_points(tick, tick_pts[i], 2);
+        lv_obj_set_style_line_width(tick, cardinal ? 5 : 3, 0);
+        lv_obj_set_style_line_color(tick, copperColor(), 0);
+    }
+
+    // minute ticks: short, thin marks at the 48 positions between the hour
+    // ticks (skips every 5th, since those already have an hour tick)
+    for (int i = 0; i < 60; i++) {
+        if (i % 5 == 0) continue;
+        float rad = i * 6.0f * ((float)M_PI / 180.0f);
+        int16_t r_out = 112, r_in = 105;
+        static lv_point_precise_t minute_tick_pts[60][2];
+        minute_tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
+        minute_tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
+        minute_tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
+        minute_tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
+
+        lv_obj_t* tick = lv_line_create(_faceScreen);
+        lv_obj_set_pos(tick, 0, 0);
+        lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
+        lv_line_set_points(tick, minute_tick_pts[i], 2);
+        lv_obj_set_style_line_width(tick, 1, 0);
+        lv_obj_set_style_line_color(tick, copperColor(), 0);
+    }
+
+    // Optional watermark text (see setBrandText()), placed between the
+    // ticks and the hands so painter's-order z-order puts the hands on
+    // top — LVGL draws each screen's children in add order, later = on
+    // top. Empty strings render as empty labels, which is fine — this
+    // driver has no opinion on branding, that's the app's call.
+    lv_obj_t* brandLabel = lv_label_create(_faceScreen);
+    lv_obj_set_style_text_font(brandLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(brandLabel, lv_color_white(), 0);
+    lv_label_set_text(brandLabel, _brandLine1);
+    lv_obj_align(brandLabel, LV_ALIGN_CENTER, 0, -46);
+
+    lv_obj_t* yearLabel = lv_label_create(_faceScreen);
+    lv_obj_set_style_text_font(yearLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(yearLabel, lv_color_white(), 0);
+    lv_label_set_text(yearLabel, _brandLine2);
+    lv_obj_align(yearLabel, LV_ALIGN_CENTER, 0, -28);
+
+    // Day/date complication ("MON 15"), 3 o'clock position — inside the
+    // tick ring (which starts at radius 92-98), clear of the brand/year
+    // text above and the time/temp/humidity row below.
+    _dateLabel = lv_label_create(_faceScreen);
+    lv_obj_set_style_text_font(_dateLabel, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_dateLabel, lv_color_white(), 0);
+    lv_obj_align(_dateLabel, LV_ALIGN_CENTER, 68, 0);
+
+    // widths taper base -> mid -> tip; see setTaperedHand() for the
+    // matching radius breakpoints used each tick. Widths and colors ramp
+    // base -> tip in kHandSegs steps, simulating light catching a
+    // beveled/polished metal hand (darker+narrower near the hub,
+    // brighter+narrower toward the tip).
+    int16_t hourWidths[kHandSegs], minWidths[kHandSegs], secWidths[kHandSegs];
+    fillIntRamp(hourWidths, kHandSegs, 8, 3);
+    fillIntRamp(minWidths, kHandSegs, 6, 2);
+    fillIntRamp(secWidths, kHandSegs, 3, 1);
+
+    lv_color_t hourColors[kHandSegs], minColors[kHandSegs], secColors[kHandSegs];
+    fillColorRamp(hourColors, kHandSegs, lv_color_hex(0x8A5A28), lv_color_hex(0xE0A868));
+    fillColorRamp(minColors, kHandSegs, lv_color_hex(0x8A5A28), lv_color_hex(0xE0A868));
+    fillColorRamp(secColors, kHandSegs, lv_color_hex(0x8B0000), lv_color_hex(0xFF6659));
+
+    createTaperedHand(_faceScreen, _hourSegs, hourWidths, hourColors, kHandSegs);
+    createTaperedHand(_faceScreen, _minSegs, minWidths, minColors, kHandSegs);
+    createTaperedHand(_faceScreen, _secSegs, secWidths, secColors, kHandSegs);
+
+    // center hub, drawn last so it sits above the hands
+    lv_obj_t* hub = lv_obj_create(_faceScreen);
+    lv_obj_remove_style_all(hub);
+    lv_obj_set_size(hub, 10, 10);
+    lv_obj_center(hub);
+    lv_obj_set_style_radius(hub, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(hub, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_obj_set_style_bg_opa(hub, LV_OPA_COVER, 0);
+
+    // digital readout, below center: fixed-position slots (see header comment
+    // on why each digit gets its own fixed-width slot rather than one label)
+    _digitSlots[0] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -58, nullptr);
+    _digitSlots[1] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -38, nullptr);
+    _colonSlots[0] = createTimeSlot(_faceScreen, TIME_COLON_W, -24, ":");
+    _digitSlots[2] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -10, nullptr);
+    _digitSlots[3] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 10, nullptr);
+    _colonSlots[1] = createTimeSlot(_faceScreen, TIME_COLON_W, 24, ":");
+    _digitSlots[4] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 38, nullptr);
+    _digitSlots[5] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 58, nullptr);
+
+    // Info label: same row, shown instead of the digit slots when cycling
+    // to temperature/humidity. Hidden until the rotation selects it.
+    _infoLabel = lv_label_create(_faceScreen);
+    lv_obj_set_style_text_font(_infoLabel, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(_infoLabel, lv_color_white(), 0);
+    lv_obj_align(_infoLabel, LV_ALIGN_CENTER, 0, TIME_ROW_Y);
+    lv_obj_add_flag(_infoLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+// --- Watch face ticking -------------------------------------------------------
+
+// Positions one segment of a tapered hand, running from radius r0 to r1
+// along angle_deg (both measured from center — segments don't have to
+// start at the center, e.g. the mid/tip segments start where the
+// previous one ended). Same tight-bounding-box technique as the original
+// single-piece hands: each segment's line object is sized/positioned to
+// just cover its own two endpoints, not the whole screen, so redraws stay
+// small. Width is set once at creation (createTaperedHand), not here.
+static void setHandSeg(lv_obj_t* seg, lv_point_precise_t* pts, float angle_deg,
+                        int16_t r0, int16_t r1) {
+    float rad = angle_deg * ((float)M_PI / 180.0f);
+    int16_t cx = CLOCK_CENTER_X, cy = CLOCK_CENTER_Y;
+    int16_t x0 = cx + (int16_t)roundf(r0 * sinf(rad));
+    int16_t y0 = cy - (int16_t)roundf(r0 * cosf(rad));
+    int16_t x1 = cx + (int16_t)roundf(r1 * sinf(rad));
+    int16_t y1 = cy - (int16_t)roundf(r1 * cosf(rad));
+
+    int16_t min_x = (x0 < x1) ? x0 : x1;
+    int16_t max_x = (x0 > x1) ? x0 : x1;
+    int16_t min_y = (y0 < y1) ? y0 : y1;
+    int16_t max_y = (y0 > y1) ? y0 : y1;
+    const int16_t pad = 5; // headroom for the widest segment + rounded caps
+
+    int16_t ox = min_x - pad;
+    int16_t oy = min_y - pad;
+    int16_t ow = (max_x - min_x) + 2 * pad;
+    int16_t oh = (max_y - min_y) + 2 * pad;
+
+    pts[0].x = x0 - ox;
+    pts[0].y = y0 - oy;
+    pts[1].x = x1 - ox;
+    pts[1].y = y1 - oy;
+
+    lv_obj_set_pos(seg, ox, oy);
+    lv_obj_set_size(seg, ow, oh);
+    lv_line_set_points(seg, pts, 2);
+}
+
+// Updates all `count` segments of a tapered hand. radii has count+1
+// boundary radii (segment i runs radii[i] -> radii[i+1]) — radii[0] is
+// normally 0 (the hub). See fillRadii() for how these are generated.
+static void setTaperedHand(lv_obj_t* segs[], lv_point_precise_t segPts[][2],
+                            float angle_deg, const int16_t radii[], int count) {
+    for (int i = 0; i < count; i++) {
+        setHandSeg(segs[i], segPts[i], angle_deg, radii[i], radii[i + 1]);
+    }
+}
+
+static void setDigit(lv_obj_t* slot, uint32_t value) {
+    char buf[2] = { (char)('0' + value), '\0' };
+    lv_label_set_text(slot, buf);
+}
+
+void DispDriverGc9a01RoundClock::tickWatchFace() {
+    if (!_timeProvider) return; // not wired up yet
+
+    DisplayTime dt = _timeProvider->getDisplayTime();
+
+    double s = dt.second;
+    uint32_t m = (uint32_t)dt.minute;
+    uint32_t h = (uint32_t)(dt.hour % 12);
+    uint32_t sec_whole = (uint32_t)dt.second;
+
+    // Day/date complication — only touches the label once per day.
+    if (dt.mday != _dateShownMday) {
+        _dateShownMday = dt.mday;
+        static const char* kDayNames[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
+        char dateBuf[12];
+        snprintf(dateBuf, sizeof(dateBuf), "%s %d", kDayNames[dt.wday], dt.mday);
+        lv_label_set_text(_dateLabel, dateBuf);
+    }
+
+    // Hands always run, regardless of what the info row below is showing —
+    // they're the "at a glance" clock and shouldn't disappear while the
+    // rotation is on temperature/humidity. Radius boundaries are cheap to
+    // recompute every tick (a handful of integer divides) rather than
+    // worth caching as members.
+    int16_t hourRadii[kHandSegs + 1], minRadii[kHandSegs + 1], secRadii[kHandSegs + 1];
+    fillRadii(hourRadii, kHandSegs, HOUR_HAND_LEN);
+    fillRadii(minRadii, kHandSegs, MIN_HAND_LEN);
+    fillRadii(secRadii, kHandSegs, SEC_HAND_LEN);
+    setTaperedHand(_hourSegs, _hourSegPts, h * 30.0f + m * 0.5f, hourRadii, kHandSegs);
+    setTaperedHand(_minSegs, _minSegPts, m * 6.0f + (float)s * 0.1f, minRadii, kHandSegs);
+    setTaperedHand(_secSegs, _secSegPts, (float)s * 6.0f, secRadii, kHandSegs);
+
+    // Info row: cycles time -> temperature -> humidity -> time. Skips
+    // temperature/humidity entirely (stays on TIME) until a weather
+    // reading has actually succeeded at least once.
+    int64_t faceModeNowUs = esp_timer_get_time();
+    if (faceModeNowUs - _faceModeSinceUs > kFaceModeDurationUs) {
+        _faceModeSinceUs = faceModeNowUs;
+        do {
+            _faceMode = static_cast<FaceMode>((static_cast<int>(_faceMode) + 1) % 3);
+        } while (_faceMode != FaceMode::TIME && !_weatherValid);
+        updateFaceModeVisibility();
+    }
+
+    // Packs (hour, minute, whole-second) into one comparable value to gate
+    // digit refreshes to actual changes — uses the raw 0-23 hour (not the
+    // 0-11 `h` used for hand angle above) so AM/PM don't alias to the same
+    // key.
+    uint32_t shownKey = (uint32_t)dt.hour * 3600u + m * 60u + sec_whole;
+    if (_faceMode == FaceMode::TIME && shownKey != _digitsShownSec) {
+        _digitsShownSec = shownKey;
+        uint32_t hh = h;
+        if (hh == 0) hh = 12;
+        setDigit(_digitSlots[0], hh / 10);
+        setDigit(_digitSlots[1], hh % 10);
+        setDigit(_digitSlots[2], m / 10);
+        setDigit(_digitSlots[3], m % 10);
+        setDigit(_digitSlots[4], sec_whole / 10);
+        setDigit(_digitSlots[5], sec_whole % 10);
+    }
+}
+
+void DispDriverGc9a01RoundClock::updateFaceModeVisibility() {
+    bool showDigits = (_faceMode == FaceMode::TIME);
+    for (lv_obj_t* slot : _digitSlots) {
+        if (showDigits) lv_obj_clear_flag(slot, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(slot, LV_OBJ_FLAG_HIDDEN);
+    }
+    for (lv_obj_t* colon : _colonSlots) {
+        if (showDigits) lv_obj_clear_flag(colon, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(colon, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (showDigits) {
+        lv_obj_add_flag(_infoLabel, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_clear_flag(_infoLabel, LV_OBJ_FLAG_HIDDEN);
+    char buf[16];
+    if (_faceMode == FaceMode::TEMPERATURE) {
+        snprintf(buf, sizeof(buf), "%.0f F", _tempF);
+    } else {
+        snprintf(buf, sizeof(buf), "%d%% RH", _humidity);
+    }
+    lv_label_set_text(_infoLabel, buf);
+}
+
+void DispDriverGc9a01RoundClock::setWeatherData(float tempF, int humidity, bool valid) {
+    _tempF = tempF;
+    _humidity = humidity;
+    _weatherValid = valid;
+}
+
+void DispDriverGc9a01RoundClock::tickTimerCb(lv_timer_t* timer) {
+    auto* self = static_cast<DispDriverGc9a01RoundClock*>(lv_timer_get_user_data(timer));
+    self->tickWatchFace();
+}
+
+void DispDriverGc9a01RoundClock::showClockFace(bool show) {
+    if (!_began) return;
+    lvgl_port_lock(0);
+    lv_scr_load(show ? _faceScreen : _bootScreen);
+    lvgl_port_unlock();
+    _showingFace = show;
+}
+
+// --- IDisplayDriver: status-text bridge --------------------------------------
+// No real segment glass behind this driver — setSegments()/setDot() are
+// accepted but no-op, and mapAsciiToSegment() has nothing meaningful to
+// encode. Only the plain-text path (setChar/setBuffer/writeDisplay) does
+// anything, which is all the boot/status messages this app shows need.
+
+void DispDriverGc9a01RoundClock::setBrightness(uint8_t /*level*/) {
+    // Backlight is a plain GPIO on/off, not PWM-driven — nothing to scale.
+}
+
+void DispDriverGc9a01RoundClock::clear() {
+    std::memset(_statusBuf, 0, sizeof(_statusBuf));
+}
+
+void DispDriverGc9a01RoundClock::setChar(int position, char character, bool /*dot*/) {
+    if (position < 0 || position >= kStatusCells) return;
+    _statusBuf[position] = character;
+}
+
+void DispDriverGc9a01RoundClock::setSegments(int /*position*/, uint16_t /*mask*/) {}
+
+void DispDriverGc9a01RoundClock::setDot(int /*position*/, bool /*on*/) {}
+
+unsigned long DispDriverGc9a01RoundClock::mapAsciiToSegment(char ascii_char, bool /*dot*/) {
+    return (unsigned long)(unsigned char)ascii_char;
+}
+
+void DispDriverGc9a01RoundClock::setBuffer(const std::vector<unsigned long>& newBuffer) {
+    std::memset(_statusBuf, 0, sizeof(_statusBuf));
+    size_t n = newBuffer.size() < (size_t)kStatusCells ? newBuffer.size() : (size_t)kStatusCells;
+    for (size_t i = 0; i < n; i++) {
+        _statusBuf[i] = (char)newBuffer[i];
+    }
+}
+
+void DispDriverGc9a01RoundClock::writeDisplay() {
+    if (!_began) return;
+    char text[kStatusCells + 1];
+    std::memcpy(text, _statusBuf, kStatusCells);
+    text[kStatusCells] = '\0';
+
+    lvgl_port_lock(0);
+    lv_label_set_text(_statusLabel, text);
+    lvgl_port_unlock();
+}
+
+void DispDriverGc9a01RoundClock::getFrameData(unsigned long* buffer) {
+    for (int i = 0; i < kStatusCells; i++) {
+        buffer[i] = (unsigned long)(unsigned char)_statusBuf[i];
+    }
+}

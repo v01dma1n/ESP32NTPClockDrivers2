@@ -19,8 +19,12 @@
 
 class DispDriverPT6315 : public IDisplayDriver {
 public:
+    // host: no default -- SPI3_HOST (VSPI) only exists on dual-SPI
+    // targets like the classic ESP32; single-SPI targets (e.g.
+    // ESP32-C3) only have SPI2_HOST. Callers must pick what's valid for
+    // their target.
     DispDriverPT6315(int sck_gpio, int cs_gpio, int mosi_gpio,
-                     spi_host_device_t host = SPI3_HOST);
+                     spi_host_device_t host);
     ~DispDriverPT6315() override;
 
     // --- IDisplayDriver ----------------------------------------------------

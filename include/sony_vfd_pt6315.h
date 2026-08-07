@@ -56,10 +56,13 @@ enum SonyVfdAnnunciator : uint8_t {
 
 class SonyVfdPt6315 {
 public:
-    // sck/mosi/cs are GPIO numbers. hostNum lets the caller pick between
-    // HSPI/VSPI; defaults to VSPI to match the Sony board's wiring.
+    // sck/mosi/cs are GPIO numbers. host lets the caller pick between
+    // HSPI/VSPI on dual-SPI targets like the classic ESP32 (the Sony
+    // board's original wiring used VSPI/SPI3_HOST) -- no default, since
+    // single-SPI targets (e.g. ESP32-C3) only have SPI2_HOST, so a
+    // hardcoded default here wouldn't be portable.
     SonyVfdPt6315(int sck_gpio, int cs_gpio, int mosi_gpio,
-                  spi_host_device_t host = SPI3_HOST);
+                  spi_host_device_t host);
     ~SonyVfdPt6315();
 
     // Bring up SPI, send the PT6315 init sequence, clear RAM, enable display.

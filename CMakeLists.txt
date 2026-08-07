@@ -11,6 +11,18 @@
 #   DispDriverLglVfd     — LGL Studio VFD driver (bit-bang, MoodWhisperer's
 #                          replacement glass — see components/lgl_vfd_studio)
 #   Ds1307Driver         — DS1307 RTC driver    (I2C, shared)
+#
+# DispDriverGc9a01RoundClock (GC9A01 round LCD, LVGL-based) lives in its
+# own nested component, gc9a01/, instead of here — it needs esp_lvgl_port/
+# lvgl/esp_lcd_gc9a01 as build dependencies, and ESP-IDF's component
+# system doesn't support conditionally adding to REQUIRES based on what's
+# present elsewhere in the build (only SRCS can be conditional; REQUIRES
+# has to be known before the dependency graph — which BUILD_COMPONENTS
+# reflects — is resolved, so a REQUIRES that depends on BUILD_COMPONENTS
+# doesn't reliably take effect). A separate component means it's simply
+# never processed at all unless a consumer explicitly adds it to
+# EXTRA_COMPONENT_DIRS — see gc9a01/CMakeLists.txt and this repo's
+# README.
 
 idf_component_register(
     SRCS
