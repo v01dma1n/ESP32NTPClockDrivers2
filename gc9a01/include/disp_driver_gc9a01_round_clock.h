@@ -103,6 +103,17 @@ public:
     // branding. Either argument may be nullptr to leave that line as-is.
     void setBrandText(const char* line1, const char* line2);
 
+    // Feeds a value onto the half-circle rate gauge on the left side of
+    // the dial (a "how fast is the clock currently running" indicator —
+    // generic in the sense that the driver has no idea what "value"
+    // means, it just points a needle). value is shown relative to
+    // [-fullScale, +fullScale]: 0 = needle rests pointing left (9
+    // o'clock), +fullScale = needle at top (12 o'clock, green arc),
+    // -fullScale = needle at bottom (6 o'clock, red arc); values beyond
+    // the range saturate at the needle's max deflection rather than
+    // going out of bounds. Safe to call every app loop() tick.
+    void setRateGauge(float value, float fullScale);
+
 private:
     static constexpr int kStatusCells = 32;
 
@@ -166,6 +177,13 @@ private:
     // What time to render each tick; see setTimeProvider(). Not owned —
     // the caller (app layer) owns the concrete provider's lifetime.
     IDisplayTimeProvider* _timeProvider = nullptr;
+
+    // Rate gauge: a half-circle sub-dial on the left side, see
+    // setRateGauge(). Only the needle updates per tick (tight-bounding-box
+    // technique, same as the hands); the tick marks are static, built once.
+    lv_obj_t* _gaugeNeedle = nullptr;
+    lv_point_precise_t _gaugeNeedlePts[2] = {};
+    float _gaugeNormalized = 0.0f; // -1..+1, see setRateGauge()
 
     esp_lcd_panel_io_handle_t _ioHandle = nullptr;
     esp_lcd_panel_handle_t _panelHandle = nullptr;

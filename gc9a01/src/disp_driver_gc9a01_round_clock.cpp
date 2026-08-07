@@ -40,6 +40,19 @@ static const char* TAG = "disp_gc9a01";
 #define TIME_COLON_W 8
 #define TIME_ROW_Y   60
 
+// Rate gauge (half-circle sub-dial, left side) — see setRateGauge().
+// Pivot sits inside the tick ring (which starts at radius 92 from
+// CLOCK_CENTER), offset toward 9 o'clock; needle rests pointing due
+// left (270 deg in this file's angle convention: 0=north, clockwise)
+// and sweeps through the left half of the circle: 180 deg (south, max
+// negative) up to 360/0 deg (north, max positive).
+#define GAUGE_CENTER_X      (CLOCK_CENTER_X - 42)
+#define GAUGE_CENTER_Y      CLOCK_CENTER_Y
+#define GAUGE_TICK_OUTER_R  22
+#define GAUGE_TICK_INNER_R  16
+#define GAUGE_NEEDLE_LEN    19
+#define GAUGE_BG_RADIUS     (GAUGE_TICK_OUTER_R + 3)
+
 static lv_color_t copperColor() { return lv_color_hex(0xB87333); }
 
 DispDriverGc9a01RoundClock::DispDriverGc9a01RoundClock() {
@@ -181,6 +194,12 @@ static void createTaperedHand(lv_obj_t* parent, lv_obj_t* segs[],
     }
 }
 
+// Forward-declared: real definition (with the tight-bounding-box
+// technique doc comment) is down in the watch-face-ticking section; used
+// here in buildUi() to set the rate gauge needle's initial position too.
+static void setHandSeg(lv_obj_t* seg, lv_point_precise_t* pts, float angle_deg,
+                        int16_t r0, int16_t r1, int16_t cx, int16_t cy);
+
 static lv_obj_t* createTimeSlot(lv_obj_t* parent, int16_t width, int16_t x_offset, const char* text) {
     lv_obj_t* lbl = lv_label_create(parent);
     lv_obj_set_width(lbl, width);
@@ -272,6 +291,84 @@ void DispDriverGc9a01RoundClock::buildUi() {
         lv_obj_set_style_line_color(tick, copperColor(), 0);
     }
 
+    // Rate gauge backing half-disc — gray so the black needle (and dark
+    // tick colors) stay visible against the dial's black background, with
+    // a light-at-top/dark-at-bottom gradient (via the same fillColorRamp()
+    // used for the hand color ramps) so it reads as a curved/domed surface
+    // catching light from above rather than a flat wedge. A true
+    // half-circle (not a full disc): built as a fan of overlapping thick
+    // radial lines from the pivot, same technique as every other
+    // line-based element on this face, rather than a new widget type.
+    // Static — built once, no ongoing per-tick cost.
+    {
+        static constexpr int kGaugeFanSegs = 46; // 4deg steps -- finer angular
+                                                  // resolution + rounded caps
+                                                  // (below) smooth the outer
+                                                  // edge; free at runtime since
+                                                  // this is a one-time static
+                                                  // build, not per-tick.
+        static lv_point_precise_t gauge_fan_pts[kGaugeFanSegs][2];
+        lv_color_t gaugeGrad[kGaugeFanSegs];
+        fillColorRamp(gaugeGrad, kGaugeFanSegs, lv_color_hex(0x181818), lv_color_hex(0x707070));
+        for (int i = 0; i < kGaugeFanSegs; i++) {
+            float angle_deg = 180.0f + i * (180.0f / (kGaugeFanSegs - 1)); // 180..360
+            float rad = angle_deg * ((float)M_PI / 180.0f);
+            gauge_fan_pts[i][0].x = GAUGE_CENTER_X;
+            gauge_fan_pts[i][0].y = GAUGE_CENTER_Y;
+            gauge_fan_pts[i][1].x = GAUGE_CENTER_X + (int16_t)roundf(GAUGE_BG_RADIUS * sinf(rad));
+            gauge_fan_pts[i][1].y = GAUGE_CENTER_Y - (int16_t)roundf(GAUGE_BG_RADIUS * cosf(rad));
+
+            lv_obj_t* wedge = lv_line_create(_faceScreen);
+            lv_obj_set_pos(wedge, 0, 0);
+            lv_obj_set_size(wedge, LCD_H_RES, LCD_V_RES);
+            lv_line_set_points(wedge, gauge_fan_pts[i], 2);
+            lv_obj_set_style_line_width(wedge, 5, 0);
+            lv_obj_set_style_line_color(wedge, gaugeGrad[i], 0);
+            lv_obj_set_style_line_rounded(wedge, true, 0);
+        }
+    }
+
+    // Rate gauge (see setRateGauge()): 7 static tick marks across the
+    // left-facing half circle (180deg south/max-negative through 270deg
+    // west/zero to 360deg north/max-positive), red for the negative half,
+    // white for zero, green for the positive half. Static — built once,
+    // never redrawn per tick, so no ongoing cost; only the needle (below)
+    // updates per tick.
+    {
+        static const float kGaugeTickAngles[7] = { 180, 210, 240, 270, 300, 330, 360 };
+        static const lv_color_t kGaugeTickColors[7] = {
+            lv_color_hex(0xFF3333), lv_color_hex(0xFF3333), lv_color_hex(0xFF3333),
+            lv_color_hex(0xFFFFFF),
+            lv_color_hex(0x33CC33), lv_color_hex(0x33CC33), lv_color_hex(0x33CC33),
+        };
+        static lv_point_precise_t gauge_tick_pts[7][2];
+        for (int i = 0; i < 7; i++) {
+            float rad = kGaugeTickAngles[i] * ((float)M_PI / 180.0f);
+            gauge_tick_pts[i][0].x = GAUGE_CENTER_X + (int16_t)roundf(GAUGE_TICK_OUTER_R * sinf(rad));
+            gauge_tick_pts[i][0].y = GAUGE_CENTER_Y - (int16_t)roundf(GAUGE_TICK_OUTER_R * cosf(rad));
+            gauge_tick_pts[i][1].x = GAUGE_CENTER_X + (int16_t)roundf(GAUGE_TICK_INNER_R * sinf(rad));
+            gauge_tick_pts[i][1].y = GAUGE_CENTER_Y - (int16_t)roundf(GAUGE_TICK_INNER_R * cosf(rad));
+
+            lv_obj_t* tick = lv_line_create(_faceScreen);
+            lv_obj_set_pos(tick, 0, 0);
+            lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
+            lv_line_set_points(tick, gauge_tick_pts[i], 2);
+            lv_obj_set_style_line_width(tick, (i == 3) ? 3 : 2, 0); // zero tick slightly bolder
+            lv_obj_set_style_line_color(tick, kGaugeTickColors[i], 0);
+            lv_obj_set_style_line_rounded(tick, true, 0);
+        }
+    }
+
+    // Rate gauge needle: black, pivots at GAUGE_CENTER, updated per tick
+    // in tickWatchFace() via setHandSeg() (same tight-bounding-box
+    // technique as the clock hands). Starts pointing left (zero/rest).
+    _gaugeNeedle = lv_line_create(_faceScreen);
+    lv_obj_set_style_line_width(_gaugeNeedle, 2, 0);
+    lv_obj_set_style_line_color(_gaugeNeedle, lv_color_black(), 0);
+    lv_obj_set_style_line_rounded(_gaugeNeedle, true, 0);
+    setHandSeg(_gaugeNeedle, _gaugeNeedlePts, 270.0f, 0, GAUGE_NEEDLE_LEN,
+               GAUGE_CENTER_X, GAUGE_CENTER_Y);
+
     // Optional watermark text (see setBrandText()), placed between the
     // ticks and the hands so painter's-order z-order puts the hands on
     // top — LVGL draws each screen's children in add order, later = on
@@ -348,16 +445,17 @@ void DispDriverGc9a01RoundClock::buildUi() {
 // --- Watch face ticking -------------------------------------------------------
 
 // Positions one segment of a tapered hand, running from radius r0 to r1
-// along angle_deg (both measured from center — segments don't have to
-// start at the center, e.g. the mid/tip segments start where the
-// previous one ended). Same tight-bounding-box technique as the original
+// along angle_deg, pivoting around (cx,cy) — segments don't have to
+// start at the pivot, e.g. the mid/tip segments start where the
+// previous one ended. Same tight-bounding-box technique as the original
 // single-piece hands: each segment's line object is sized/positioned to
 // just cover its own two endpoints, not the whole screen, so redraws stay
 // small. Width is set once at creation (createTaperedHand), not here.
+// (cx,cy) generalizes this beyond the clock hands to any other
+// pivot-and-sweep indicator on the face — see the rate gauge's needle.
 static void setHandSeg(lv_obj_t* seg, lv_point_precise_t* pts, float angle_deg,
-                        int16_t r0, int16_t r1) {
+                        int16_t r0, int16_t r1, int16_t cx, int16_t cy) {
     float rad = angle_deg * ((float)M_PI / 180.0f);
-    int16_t cx = CLOCK_CENTER_X, cy = CLOCK_CENTER_Y;
     int16_t x0 = cx + (int16_t)roundf(r0 * sinf(rad));
     int16_t y0 = cy - (int16_t)roundf(r0 * cosf(rad));
     int16_t x1 = cx + (int16_t)roundf(r1 * sinf(rad));
@@ -390,7 +488,8 @@ static void setHandSeg(lv_obj_t* seg, lv_point_precise_t* pts, float angle_deg,
 static void setTaperedHand(lv_obj_t* segs[], lv_point_precise_t segPts[][2],
                             float angle_deg, const int16_t radii[], int count) {
     for (int i = 0; i < count; i++) {
-        setHandSeg(segs[i], segPts[i], angle_deg, radii[i], radii[i + 1]);
+        setHandSeg(segs[i], segPts[i], angle_deg, radii[i], radii[i + 1],
+                   CLOCK_CENTER_X, CLOCK_CENTER_Y);
     }
 }
 
@@ -430,6 +529,12 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     setTaperedHand(_hourSegs, _hourSegPts, h * 30.0f + m * 0.5f, hourRadii, kHandSegs);
     setTaperedHand(_minSegs, _minSegPts, m * 6.0f + (float)s * 0.1f, minRadii, kHandSegs);
     setTaperedHand(_secSegs, _secSegPts, (float)s * 6.0f, secRadii, kHandSegs);
+
+    // Rate gauge needle: 270deg (west/left) at zero, sweeping toward
+    // 360/0deg (north) for positive values and 180deg (south) for
+    // negative, per setRateGauge()'s contract.
+    setHandSeg(_gaugeNeedle, _gaugeNeedlePts, 270.0f + _gaugeNormalized * 90.0f,
+               0, GAUGE_NEEDLE_LEN, GAUGE_CENTER_X, GAUGE_CENTER_Y);
 
     // Info row: cycles time -> temperature -> humidity -> time. Skips
     // temperature/humidity entirely (stays on TIME) until a weather
@@ -491,6 +596,14 @@ void DispDriverGc9a01RoundClock::setWeatherData(float tempF, int humidity, bool 
     _tempF = tempF;
     _humidity = humidity;
     _weatherValid = valid;
+}
+
+void DispDriverGc9a01RoundClock::setRateGauge(float value, float fullScale) {
+    if (fullScale <= 0.0f) fullScale = 1.0f;
+    float normalized = value / fullScale;
+    if (normalized > 1.0f) normalized = 1.0f;
+    if (normalized < -1.0f) normalized = -1.0f;
+    _gaugeNormalized = normalized;
 }
 
 void DispDriverGc9a01RoundClock::tickTimerCb(lv_timer_t* timer) {
