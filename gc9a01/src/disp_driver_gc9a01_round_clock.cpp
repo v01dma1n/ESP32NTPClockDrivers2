@@ -463,13 +463,15 @@ void DispDriverGc9a01RoundClock::buildUi() {
 
     // Photo face: a sibling of _faceContent (not a child of it), created
     // after it so it paints on top and fully occludes the dial — see
-    // setPhoto()/updateFaceModeVisibility(). Sized to cover the whole
+    // setPhotos()/updateFaceModeVisibility(). Sized to cover the whole
     // round panel; hidden until FaceMode::PHOTO is selected, and only
-    // ever selected once a photo has actually been set.
+    // ever selected once at least one photo has actually been set. Which
+    // image shows is picked in updateFaceModeVisibility() (round-robin),
+    // not here — the initial src doesn't matter since it's hidden.
     _photoImg = lv_image_create(_faceScreen);
     lv_obj_set_size(_photoImg, LCD_H_RES, LCD_V_RES);
     lv_obj_set_pos(_photoImg, 0, 0);
-    if (_photoSet) lv_image_set_src(_photoImg, _pendingPhoto);
+    if (_photoCount > 0) lv_image_set_src(_photoImg, _photos[0]);
     lv_obj_add_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
 
     // CRT scan-bar: a plain translucent rect, sibling of _photoImg
@@ -607,7 +609,7 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     // Info row: cycles time -> temperature -> humidity -> photo -> time.
     // Skips temperature/humidity entirely (stays on TIME) until a weather
     // reading has actually succeeded at least once; skips photo the same
-    // way until setPhoto() has actually been given an image.
+    // way until setPhotos() has actually been given at least one image.
     int64_t faceModeNowUs = esp_timer_get_time();
     int64_t modeDurationUs = (_faceMode == FaceMode::PHOTO) ? kPhotoModeDurationUs : kFaceModeDurationUs;
     if (faceModeNowUs - _faceModeSinceUs > modeDurationUs) {
@@ -647,6 +649,13 @@ void DispDriverGc9a01RoundClock::updateFaceModeVisibility() {
         lv_obj_add_flag(_faceContent, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
+        // Round-robin: show _photoIndex, then advance it for next time,
+        // so repeated visits to photo mode alternate through the set
+        // set via setPhotos() rather than always showing the same one.
+        if (_photoCount > 0) {
+            lv_image_set_src(_photoImg, _photos[_photoIndex]);
+            _photoIndex = (_photoIndex + 1) % _photoCount;
+        }
         // Reset the distortion overlay so every entry into photo mode
         // starts the same way: full brightness, scan-bar off the top
         // edge ready to sweep down — see tickWatchFace().
@@ -690,13 +699,17 @@ void DispDriverGc9a01RoundClock::setWeatherData(float tempF, int humidity, bool 
     _weatherValid = valid;
 }
 
-void DispDriverGc9a01RoundClock::setPhoto(const lv_image_dsc_t* img) {
-    _pendingPhoto = img;
-    _photoSet = (img != nullptr);
+void DispDriverGc9a01RoundClock::setPhotos(const lv_image_dsc_t* const* imgs, int count) {
+    if (!imgs || count < 0) count = 0;
+    if (count > kMaxPhotos) count = kMaxPhotos;
+    for (int i = 0; i < count; i++) _photos[i] = imgs[i];
+    _photoCount = count;
+    _photoSet = (count > 0);
+    _photoIndex = 0;
     // Also apply live if buildUi() already ran, even though the header
     // documents this as a before-begin() call — cheap to support and
     // avoids a surprise if a future caller doesn't follow that ordering.
-    if (_photoImg) lv_image_set_src(_photoImg, img);
+    if (_photoImg && count > 0) lv_image_set_src(_photoImg, _photos[0]);
 }
 
 void DispDriverGc9a01RoundClock::setRateGauge(float value, float fullScale) {

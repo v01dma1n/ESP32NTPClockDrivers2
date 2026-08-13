@@ -114,17 +114,22 @@ public:
     // going out of bounds. Safe to call every app loop() tick.
     void setRateGauge(float value, float fullScale);
 
-    // Feeds a static photo into the face-mode rotation (alongside
-    // TIME/TEMPERATURE/HUMIDITY, see updateFaceModeVisibility()) — a
-    // full-face 240x240 RGB565 image shown in place of the hands/dial/
-    // digits for one rotation slot, then hidden again. The driver has no
-    // opinion on what the image is (mirrors setTimeProvider()'s
-    // IDisplayTimeProvider seam): the caller owns the lv_image_dsc_t's
-    // storage/lifetime, which must outlive this driver. Pass nullptr to
-    // drop photo mode from the rotation. Must be called before begin() —
-    // like setBrandText(), it's read once at buildUi()-time, not re-read
-    // per tick.
-    void setPhoto(const lv_image_dsc_t* img);
+    // Feeds one or more static photos into the face-mode rotation
+    // (alongside TIME/TEMPERATURE/HUMIDITY, see
+    // updateFaceModeVisibility()) — a full-face 240x240 RGB565 image
+    // shown in place of the hands/dial/digits for one rotation slot,
+    // then hidden again. With more than one image, each entry into
+    // photo mode advances to the next image round-robin (see
+    // _photoIndex in tickWatchFace()'s completion path), so repeated
+    // visits alternate between them rather than always showing the
+    // same one. The driver has no opinion on what the images are
+    // (mirrors setTimeProvider()'s IDisplayTimeProvider seam): the
+    // caller owns both the array and the lv_image_dsc_t's it points to,
+    // which must outlive this driver. count is clamped to kMaxPhotos;
+    // count == 0 (or imgs == nullptr) drops photo mode from the
+    // rotation. Must be called before begin() — like setBrandText(),
+    // it's read once at buildUi()-time, not re-read per tick.
+    void setPhotos(const lv_image_dsc_t* const* imgs, int count);
 
 private:
     static constexpr int kStatusCells = 32;
@@ -202,14 +207,20 @@ private:
     // individually — see buildUi() and updateFaceModeVisibility().
     lv_obj_t* _faceContent = nullptr;
     lv_obj_t* _photoImg = nullptr;   // sibling of _faceContent, drawn on top
-    bool _photoSet = false;          // see setPhoto()
-    const lv_image_dsc_t* _pendingPhoto = nullptr; // buffered until buildUi()
+    bool _photoSet = false;          // see setPhotos()
+    // Round-robin photo set, see setPhotos(). _photoIndex is the index
+    // shown on the *next* entry into photo mode (advanced in
+    // updateFaceModeVisibility()), not the one currently on screen.
+    static constexpr int kMaxPhotos = 4;
+    const lv_image_dsc_t* _photos[kMaxPhotos] = {};
+    int _photoCount = 0;
+    int _photoIndex = 0;
 
     // CRT-style distortion overlay for photo mode (see tickWatchFace()): a
     // translucent scan-bar that sweeps top-to-bottom and wraps, plus a
     // subtle per-tick opacity jitter on _photoImg itself for a flicker
-    // feel. Purely a rendering effect layered on setPhoto()'s image — the
-    // driver still has no opinion on what the image depicts.
+    // feel. Purely a rendering effect layered on setPhotos()'s images —
+    // the driver still has no opinion on what they depict.
     lv_obj_t* _photoScanBar = nullptr;
     int16_t _photoScanBarY = 0;
 
