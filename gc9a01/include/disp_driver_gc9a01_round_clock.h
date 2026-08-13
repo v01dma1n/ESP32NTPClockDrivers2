@@ -182,6 +182,13 @@ private:
     // TEMPERATURE/HUMIDITY which only swap the info label.
     enum class FaceMode { TIME, TEMPERATURE, HUMIDITY, PHOTO };
     static constexpr int64_t kFaceModeDurationUs = 5 * 1000000; // 5s per mode
+    // Safety fallback only: PHOTO normally exits as soon as the CRT
+    // scan-bar sweep reaches the bottom edge (see tickWatchFace()), not
+    // on a timer, so a photo of any brightness/content still gets a
+    // predictable one-pass "scan" before switching back — this just
+    // bounds how long PHOTO can dwell if that completion check were ever
+    // skipped.
+    static constexpr int64_t kPhotoModeDurationUs = 10 * 1000000; // 10s
     FaceMode _faceMode = FaceMode::TIME;
     int64_t _faceModeSinceUs = 0;
     lv_obj_t* _infoLabel = nullptr;
@@ -197,6 +204,14 @@ private:
     lv_obj_t* _photoImg = nullptr;   // sibling of _faceContent, drawn on top
     bool _photoSet = false;          // see setPhoto()
     const lv_image_dsc_t* _pendingPhoto = nullptr; // buffered until buildUi()
+
+    // CRT-style distortion overlay for photo mode (see tickWatchFace()): a
+    // translucent scan-bar that sweeps top-to-bottom and wraps, plus a
+    // subtle per-tick opacity jitter on _photoImg itself for a flicker
+    // feel. Purely a rendering effect layered on setPhoto()'s image — the
+    // driver still has no opinion on what the image depicts.
+    lv_obj_t* _photoScanBar = nullptr;
+    int16_t _photoScanBarY = 0;
 
     // What time to render each tick; see setTimeProvider(). Not owned —
     // the caller (app layer) owns the concrete provider's lifetime.

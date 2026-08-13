@@ -4,6 +4,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_gc9a01.h"
 #include "esp_lvgl_port.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "driver/spi_master.h"
 #include "driver/gpio.h"
@@ -52,6 +53,14 @@ static const char* TAG = "disp_gc9a01";
 #define GAUGE_TICK_INNER_R  16
 #define GAUGE_NEEDLE_LEN    19
 #define GAUGE_BG_RADIUS     (GAUGE_TICK_OUTER_R + 3)
+
+// Photo mode's CRT scan-bar overlay — see tickWatchFace(). Real per-tick
+// wall time isn't a clean 30ms under load (SPI flush cost varies with
+// what's on screen), so treat PHOTO_SCANBAR_SPEED as a starting point to
+// retune against the actual dwell (kPhotoModeDurationUs) on hardware
+// rather than trusting the nominal px/tick * 30ms math.
+#define PHOTO_SCANBAR_H     14
+#define PHOTO_SCANBAR_SPEED 4 // px/tick
 
 static lv_color_t copperColor() { return lv_color_hex(0xB87333); }
 
@@ -462,6 +471,17 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_obj_set_pos(_photoImg, 0, 0);
     if (_photoSet) lv_image_set_src(_photoImg, _pendingPhoto);
     lv_obj_add_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
+
+    // CRT scan-bar: a plain translucent rect, sibling of _photoImg
+    // created after it so it paints on top. Position/opacity-jitter
+    // logic lives in tickWatchFace(); this just builds the object once.
+    _photoScanBar = lv_obj_create(_faceScreen);
+    lv_obj_remove_style_all(_photoScanBar);
+    lv_obj_set_size(_photoScanBar, LCD_H_RES, PHOTO_SCANBAR_H);
+    lv_obj_set_style_bg_color(_photoScanBar, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(_photoScanBar, LV_OPA_60, 0);
+    lv_obj_set_pos(_photoScanBar, 0, -PHOTO_SCANBAR_H);
+    lv_obj_add_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
 }
 
 // --- Watch face ticking -------------------------------------------------------
@@ -558,12 +578,39 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     setHandSeg(_gaugeNeedle, _gaugeNeedlePts, 270.0f + _gaugeNormalized * 90.0f,
                0, GAUGE_NEEDLE_LEN, GAUGE_CENTER_X, GAUGE_CENTER_Y);
 
+    // CRT distortion overlay, only worth animating while photo mode is
+    // actually visible: a scan-bar that sweeps top->bottom once, plus a
+    // subtle per-tick opacity jitter on the photo itself for flicker.
+    // esp_random() is the hardware RNG -- cheap, no seeding needed. The
+    // sweep reaching the bottom edge is what ends photo mode (see below)
+    // rather than looping — one pass, then straight back to the clock
+    // face, not a repeating scan.
+    if (_faceMode == FaceMode::PHOTO) {
+        // Jitter the per-tick step around PHOTO_SCANBAR_SPEED (+/-2,
+        // floored at 1 so it always keeps moving forward) rather than a
+        // constant rate -- an erratic sweep speed reads as more of a
+        // wonky-vertical-hold CRT glitch than a smooth animation would.
+        int16_t step = PHOTO_SCANBAR_SPEED + (int16_t)(esp_random() % 5) - 2;
+        if (step < 1) step = 1;
+        _photoScanBarY += step;
+        if (_photoScanBarY > LCD_V_RES) {
+            _faceMode = FaceMode::TIME;
+            _faceModeSinceUs = esp_timer_get_time();
+            updateFaceModeVisibility();
+        } else {
+            lv_obj_set_pos(_photoScanBar, 0, _photoScanBarY);
+            uint8_t opa = 255 - (uint8_t)(esp_random() % 70);
+            lv_obj_set_style_image_opa(_photoImg, opa, 0);
+        }
+    }
+
     // Info row: cycles time -> temperature -> humidity -> photo -> time.
     // Skips temperature/humidity entirely (stays on TIME) until a weather
     // reading has actually succeeded at least once; skips photo the same
     // way until setPhoto() has actually been given an image.
     int64_t faceModeNowUs = esp_timer_get_time();
-    if (faceModeNowUs - _faceModeSinceUs > kFaceModeDurationUs) {
+    int64_t modeDurationUs = (_faceMode == FaceMode::PHOTO) ? kPhotoModeDurationUs : kFaceModeDurationUs;
+    if (faceModeNowUs - _faceModeSinceUs > modeDurationUs) {
         _faceModeSinceUs = faceModeNowUs;
         do {
             _faceMode = static_cast<FaceMode>((static_cast<int>(_faceMode) + 1) % 4);
@@ -599,10 +646,18 @@ void DispDriverGc9a01RoundClock::updateFaceModeVisibility() {
     if (showPhoto) {
         lv_obj_add_flag(_faceContent, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
+        // Reset the distortion overlay so every entry into photo mode
+        // starts the same way: full brightness, scan-bar off the top
+        // edge ready to sweep down — see tickWatchFace().
+        lv_obj_set_style_image_opa(_photoImg, 255, 0);
+        _photoScanBarY = -PHOTO_SCANBAR_H;
+        lv_obj_set_pos(_photoScanBar, 0, _photoScanBarY);
         return;
     }
     lv_obj_clear_flag(_faceContent, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
 
     bool showDigits = (_faceMode == FaceMode::TIME);
     for (lv_obj_t* slot : _digitSlots) {
