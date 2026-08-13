@@ -240,8 +240,19 @@ void DispDriverGc9a01RoundClock::buildUi() {
                          CLOCK_CENTER_X + 116, CLOCK_CENTER_Y, LV_GRAD_EXTEND_PAD);
     lv_obj_set_style_bg_grad(_faceScreen, &s_dialGrad, 0);
 
+    // Everything below except the photo image parents to _faceContent
+    // rather than _faceScreen directly, so FaceMode::PHOTO can hide the
+    // whole dial (ring/ticks/hands/digits/gauge) with one flag flip — see
+    // updateFaceModeVisibility(). _photoImg is created as _faceContent's
+    // sibling further down, after _faceContent so it paints on top.
+    _faceContent = lv_obj_create(_faceScreen);
+    lv_obj_remove_style_all(_faceContent);
+    lv_obj_set_size(_faceContent, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(_faceContent, 0, 0);
+    lv_obj_clear_flag(_faceContent, LV_OBJ_FLAG_SCROLLABLE);
+
     // outer bezel ring
-    lv_obj_t* ring = lv_obj_create(_faceScreen);
+    lv_obj_t* ring = lv_obj_create(_faceContent);
     lv_obj_remove_style_all(ring);
     lv_obj_set_size(ring, 232, 232);
     lv_obj_center(ring);
@@ -263,7 +274,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
         tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
         tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
 
-        lv_obj_t* tick = lv_line_create(_faceScreen);
+        lv_obj_t* tick = lv_line_create(_faceContent);
         lv_obj_set_pos(tick, 0, 0);
         lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
         lv_line_set_points(tick, tick_pts[i], 2);
@@ -283,7 +294,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
         minute_tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
         minute_tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
 
-        lv_obj_t* tick = lv_line_create(_faceScreen);
+        lv_obj_t* tick = lv_line_create(_faceContent);
         lv_obj_set_pos(tick, 0, 0);
         lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
         lv_line_set_points(tick, minute_tick_pts[i], 2);
@@ -318,7 +329,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
             gauge_fan_pts[i][1].x = GAUGE_CENTER_X + (int16_t)roundf(GAUGE_BG_RADIUS * sinf(rad));
             gauge_fan_pts[i][1].y = GAUGE_CENTER_Y - (int16_t)roundf(GAUGE_BG_RADIUS * cosf(rad));
 
-            lv_obj_t* wedge = lv_line_create(_faceScreen);
+            lv_obj_t* wedge = lv_line_create(_faceContent);
             lv_obj_set_pos(wedge, 0, 0);
             lv_obj_set_size(wedge, LCD_H_RES, LCD_V_RES);
             lv_line_set_points(wedge, gauge_fan_pts[i], 2);
@@ -349,7 +360,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
             gauge_tick_pts[i][1].x = GAUGE_CENTER_X + (int16_t)roundf(GAUGE_TICK_INNER_R * sinf(rad));
             gauge_tick_pts[i][1].y = GAUGE_CENTER_Y - (int16_t)roundf(GAUGE_TICK_INNER_R * cosf(rad));
 
-            lv_obj_t* tick = lv_line_create(_faceScreen);
+            lv_obj_t* tick = lv_line_create(_faceContent);
             lv_obj_set_pos(tick, 0, 0);
             lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
             lv_line_set_points(tick, gauge_tick_pts[i], 2);
@@ -362,7 +373,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
     // Rate gauge needle: black, pivots at GAUGE_CENTER, updated per tick
     // in tickWatchFace() via setHandSeg() (same tight-bounding-box
     // technique as the clock hands). Starts pointing left (zero/rest).
-    _gaugeNeedle = lv_line_create(_faceScreen);
+    _gaugeNeedle = lv_line_create(_faceContent);
     lv_obj_set_style_line_width(_gaugeNeedle, 2, 0);
     lv_obj_set_style_line_color(_gaugeNeedle, lv_color_black(), 0);
     lv_obj_set_style_line_rounded(_gaugeNeedle, true, 0);
@@ -374,13 +385,13 @@ void DispDriverGc9a01RoundClock::buildUi() {
     // top — LVGL draws each screen's children in add order, later = on
     // top. Empty strings render as empty labels, which is fine — this
     // driver has no opinion on branding, that's the app's call.
-    lv_obj_t* brandLabel = lv_label_create(_faceScreen);
+    lv_obj_t* brandLabel = lv_label_create(_faceContent);
     lv_obj_set_style_text_font(brandLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(brandLabel, lv_color_white(), 0);
     lv_label_set_text(brandLabel, _brandLine1);
     lv_obj_align(brandLabel, LV_ALIGN_CENTER, 0, -46);
 
-    lv_obj_t* yearLabel = lv_label_create(_faceScreen);
+    lv_obj_t* yearLabel = lv_label_create(_faceContent);
     lv_obj_set_style_text_font(yearLabel, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(yearLabel, lv_color_white(), 0);
     lv_label_set_text(yearLabel, _brandLine2);
@@ -389,7 +400,7 @@ void DispDriverGc9a01RoundClock::buildUi() {
     // Day/date complication ("MON 15"), 3 o'clock position — inside the
     // tick ring (which starts at radius 92-98), clear of the brand/year
     // text above and the time/temp/humidity row below.
-    _dateLabel = lv_label_create(_faceScreen);
+    _dateLabel = lv_label_create(_faceContent);
     lv_obj_set_style_text_font(_dateLabel, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_dateLabel, lv_color_white(), 0);
     lv_obj_align(_dateLabel, LV_ALIGN_CENTER, 68, 0);
@@ -409,12 +420,12 @@ void DispDriverGc9a01RoundClock::buildUi() {
     fillColorRamp(minColors, kHandSegs, lv_color_hex(0x8A5A28), lv_color_hex(0xE0A868));
     fillColorRamp(secColors, kHandSegs, lv_color_hex(0x8B0000), lv_color_hex(0xFF6659));
 
-    createTaperedHand(_faceScreen, _hourSegs, hourWidths, hourColors, kHandSegs);
-    createTaperedHand(_faceScreen, _minSegs, minWidths, minColors, kHandSegs);
-    createTaperedHand(_faceScreen, _secSegs, secWidths, secColors, kHandSegs);
+    createTaperedHand(_faceContent, _hourSegs, hourWidths, hourColors, kHandSegs);
+    createTaperedHand(_faceContent, _minSegs, minWidths, minColors, kHandSegs);
+    createTaperedHand(_faceContent, _secSegs, secWidths, secColors, kHandSegs);
 
     // center hub, drawn last so it sits above the hands
-    lv_obj_t* hub = lv_obj_create(_faceScreen);
+    lv_obj_t* hub = lv_obj_create(_faceContent);
     lv_obj_remove_style_all(hub);
     lv_obj_set_size(hub, 10, 10);
     lv_obj_center(hub);
@@ -424,22 +435,33 @@ void DispDriverGc9a01RoundClock::buildUi() {
 
     // digital readout, below center: fixed-position slots (see header comment
     // on why each digit gets its own fixed-width slot rather than one label)
-    _digitSlots[0] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -58, nullptr);
-    _digitSlots[1] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -38, nullptr);
-    _colonSlots[0] = createTimeSlot(_faceScreen, TIME_COLON_W, -24, ":");
-    _digitSlots[2] = createTimeSlot(_faceScreen, TIME_DIGIT_W, -10, nullptr);
-    _digitSlots[3] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 10, nullptr);
-    _colonSlots[1] = createTimeSlot(_faceScreen, TIME_COLON_W, 24, ":");
-    _digitSlots[4] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 38, nullptr);
-    _digitSlots[5] = createTimeSlot(_faceScreen, TIME_DIGIT_W, 58, nullptr);
+    _digitSlots[0] = createTimeSlot(_faceContent, TIME_DIGIT_W, -58, nullptr);
+    _digitSlots[1] = createTimeSlot(_faceContent, TIME_DIGIT_W, -38, nullptr);
+    _colonSlots[0] = createTimeSlot(_faceContent, TIME_COLON_W, -24, ":");
+    _digitSlots[2] = createTimeSlot(_faceContent, TIME_DIGIT_W, -10, nullptr);
+    _digitSlots[3] = createTimeSlot(_faceContent, TIME_DIGIT_W, 10, nullptr);
+    _colonSlots[1] = createTimeSlot(_faceContent, TIME_COLON_W, 24, ":");
+    _digitSlots[4] = createTimeSlot(_faceContent, TIME_DIGIT_W, 38, nullptr);
+    _digitSlots[5] = createTimeSlot(_faceContent, TIME_DIGIT_W, 58, nullptr);
 
     // Info label: same row, shown instead of the digit slots when cycling
     // to temperature/humidity. Hidden until the rotation selects it.
-    _infoLabel = lv_label_create(_faceScreen);
+    _infoLabel = lv_label_create(_faceContent);
     lv_obj_set_style_text_font(_infoLabel, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(_infoLabel, lv_color_white(), 0);
     lv_obj_align(_infoLabel, LV_ALIGN_CENTER, 0, TIME_ROW_Y);
     lv_obj_add_flag(_infoLabel, LV_OBJ_FLAG_HIDDEN);
+
+    // Photo face: a sibling of _faceContent (not a child of it), created
+    // after it so it paints on top and fully occludes the dial — see
+    // setPhoto()/updateFaceModeVisibility(). Sized to cover the whole
+    // round panel; hidden until FaceMode::PHOTO is selected, and only
+    // ever selected once a photo has actually been set.
+    _photoImg = lv_image_create(_faceScreen);
+    lv_obj_set_size(_photoImg, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(_photoImg, 0, 0);
+    if (_photoSet) lv_image_set_src(_photoImg, _pendingPhoto);
+    lv_obj_add_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
 }
 
 // --- Watch face ticking -------------------------------------------------------
@@ -536,15 +558,17 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     setHandSeg(_gaugeNeedle, _gaugeNeedlePts, 270.0f + _gaugeNormalized * 90.0f,
                0, GAUGE_NEEDLE_LEN, GAUGE_CENTER_X, GAUGE_CENTER_Y);
 
-    // Info row: cycles time -> temperature -> humidity -> time. Skips
-    // temperature/humidity entirely (stays on TIME) until a weather
-    // reading has actually succeeded at least once.
+    // Info row: cycles time -> temperature -> humidity -> photo -> time.
+    // Skips temperature/humidity entirely (stays on TIME) until a weather
+    // reading has actually succeeded at least once; skips photo the same
+    // way until setPhoto() has actually been given an image.
     int64_t faceModeNowUs = esp_timer_get_time();
     if (faceModeNowUs - _faceModeSinceUs > kFaceModeDurationUs) {
         _faceModeSinceUs = faceModeNowUs;
         do {
-            _faceMode = static_cast<FaceMode>((static_cast<int>(_faceMode) + 1) % 3);
-        } while (_faceMode != FaceMode::TIME && !_weatherValid);
+            _faceMode = static_cast<FaceMode>((static_cast<int>(_faceMode) + 1) % 4);
+        } while (_faceMode != FaceMode::TIME
+                 && !(_faceMode == FaceMode::PHOTO ? _photoSet : _weatherValid));
         updateFaceModeVisibility();
     }
 
@@ -567,6 +591,19 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
 }
 
 void DispDriverGc9a01RoundClock::updateFaceModeVisibility() {
+    // Photo mode occludes the whole dial (hands/ticks/digits/gauge, all
+    // under _faceContent) rather than just swapping the info row — flip
+    // both containers and return before touching anything below, which
+    // only applies to the digit-row/TEMPERATURE/HUMIDITY split.
+    bool showPhoto = (_faceMode == FaceMode::PHOTO);
+    if (showPhoto) {
+        lv_obj_add_flag(_faceContent, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(_faceContent, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(_photoImg, LV_OBJ_FLAG_HIDDEN);
+
     bool showDigits = (_faceMode == FaceMode::TIME);
     for (lv_obj_t* slot : _digitSlots) {
         if (showDigits) lv_obj_clear_flag(slot, LV_OBJ_FLAG_HIDDEN);
@@ -596,6 +633,15 @@ void DispDriverGc9a01RoundClock::setWeatherData(float tempF, int humidity, bool 
     _tempF = tempF;
     _humidity = humidity;
     _weatherValid = valid;
+}
+
+void DispDriverGc9a01RoundClock::setPhoto(const lv_image_dsc_t* img) {
+    _pendingPhoto = img;
+    _photoSet = (img != nullptr);
+    // Also apply live if buildUi() already ran, even though the header
+    // documents this as a before-begin() call — cheap to support and
+    // avoids a surprise if a future caller doesn't follow that ordering.
+    if (_photoImg) lv_image_set_src(_photoImg, img);
 }
 
 void DispDriverGc9a01RoundClock::setRateGauge(float value, float fullScale) {

@@ -114,6 +114,18 @@ public:
     // going out of bounds. Safe to call every app loop() tick.
     void setRateGauge(float value, float fullScale);
 
+    // Feeds a static photo into the face-mode rotation (alongside
+    // TIME/TEMPERATURE/HUMIDITY, see updateFaceModeVisibility()) — a
+    // full-face 240x240 RGB565 image shown in place of the hands/dial/
+    // digits for one rotation slot, then hidden again. The driver has no
+    // opinion on what the image is (mirrors setTimeProvider()'s
+    // IDisplayTimeProvider seam): the caller owns the lv_image_dsc_t's
+    // storage/lifetime, which must outlive this driver. Pass nullptr to
+    // drop photo mode from the rotation. Must be called before begin() —
+    // like setBrandText(), it's read once at buildUi()-time, not re-read
+    // per tick.
+    void setPhoto(const lv_image_dsc_t* img);
+
 private:
     static constexpr int kStatusCells = 32;
 
@@ -163,9 +175,12 @@ private:
     int _dateShownMday = -1; // -1: not shown yet (tm_mday is always 1..31)
 
     // Info-row rotation: alternates the digit readout between time,
-    // temperature, and humidity every kFaceModeDurationUs. Hands keep
-    // ticking continuously regardless of mode — see tickWatchFace().
-    enum class FaceMode { TIME, TEMPERATURE, HUMIDITY };
+    // temperature, humidity, and (if set) the photo every
+    // kFaceModeDurationUs. Hands keep ticking continuously regardless of
+    // mode — see tickWatchFace(). PHOTO replaces the whole dial rather
+    // than just the digit row (see _faceContent/_photoImg below), unlike
+    // TEMPERATURE/HUMIDITY which only swap the info label.
+    enum class FaceMode { TIME, TEMPERATURE, HUMIDITY, PHOTO };
     static constexpr int64_t kFaceModeDurationUs = 5 * 1000000; // 5s per mode
     FaceMode _faceMode = FaceMode::TIME;
     int64_t _faceModeSinceUs = 0;
@@ -173,6 +188,15 @@ private:
     float _tempF = 0.0f;
     int _humidity = 0;
     bool _weatherValid = false;
+
+    // Everything on the dial except the photo (ring/ticks/hands/digits/
+    // gauge) lives under this one container so FaceMode::PHOTO can hide
+    // it all with a single flag flip instead of tracking every sub-object
+    // individually — see buildUi() and updateFaceModeVisibility().
+    lv_obj_t* _faceContent = nullptr;
+    lv_obj_t* _photoImg = nullptr;   // sibling of _faceContent, drawn on top
+    bool _photoSet = false;          // see setPhoto()
+    const lv_image_dsc_t* _pendingPhoto = nullptr; // buffered until buildUi()
 
     // What time to render each tick; see setTimeProvider(). Not owned —
     // the caller (app layer) owns the concrete provider's lifetime.
