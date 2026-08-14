@@ -75,6 +75,40 @@ static const char* TAG = "disp_gc9a01";
 // track at a glance against an otherwise B&W face.
 static lv_color_t dialAccentColor() { return lv_color_hex(0xC0C0C0); }
 
+// CRT scanline overlay, tiled across the whole face screen (both the
+// dial and photo mode -- it's the topmost sibling in _faceScreen, see
+// buildUi()) so the whole watch face reads as viewed through a CRT, not
+// just the photo distortion effects. A single tiled A8 (alpha-only, 1
+// byte/pixel) image rather than many thin lv_obj bars: this MCU/display
+// combo has a real per-*object* redraw cost (see the README's "Why the
+// hands are flat, not tapered" and the hand-segment-count history) --
+// tens of extra always-on objects sitting on top of the hands would pay
+// that cost every tick even though scanlines themselves never move.
+// LVGL's software renderer draws an A8 bg-image as a mask tinted by
+// bg_image_recolor (see lv_draw_sw_img.c), so this tile carries no
+// color, just the alternating opaque/transparent alpha pattern; one
+// dark row every other row is enough to read as scanlines without
+// meaningfully dimming digits/hands underneath.
+static const uint8_t kScanlineTileData[16] = {
+    70, 70, 70, 70, 70, 70, 70, 70, // dark row
+    0,  0,  0,  0,  0,  0,  0,  0,  // transparent row
+};
+static const lv_image_dsc_t kScanlineTile = {
+    .header = {
+        .magic = LV_IMAGE_HEADER_MAGIC,
+        .cf = LV_COLOR_FORMAT_A8,
+        .flags = 0,
+        .w = 8,
+        .h = 2,
+        .stride = 8,
+        .reserved_2 = 0,
+    },
+    .data_size = sizeof(kScanlineTileData),
+    .data = kScanlineTileData,
+    .reserved = nullptr,
+    .reserved_2 = nullptr,
+};
+
 DispDriverGc9a01RoundClock::DispDriverGc9a01RoundClock() {
     std::memset(_statusBuf, 0, sizeof(_statusBuf));
 }
@@ -567,6 +601,19 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_obj_set_size(_photoNoiseBar, LCD_H_RES, 2);
     lv_obj_set_pos(_photoNoiseBar, 0, -PHOTO_SCANBAR_H_MAX);
     lv_obj_add_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
+
+    // Scanline overlay: created last so it's the topmost _faceScreen
+    // child, drawn over the dial, the digits, and photo mode alike.
+    // Never hidden/toggled — see kScanlineTile's comment for why this
+    // is one tiled image rather than many line objects.
+    lv_obj_t* scanlines = lv_obj_create(_faceScreen);
+    lv_obj_remove_style_all(scanlines);
+    lv_obj_set_size(scanlines, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_pos(scanlines, 0, 0);
+    lv_obj_set_style_bg_image_src(scanlines, &kScanlineTile, 0);
+    lv_obj_set_style_bg_image_tiled(scanlines, true, 0);
+    lv_obj_set_style_bg_image_recolor(scanlines, lv_color_black(), 0);
+    lv_obj_set_style_bg_image_recolor_opa(scanlines, LV_OPA_COVER, 0);
 }
 
 // --- Watch face ticking -------------------------------------------------------
