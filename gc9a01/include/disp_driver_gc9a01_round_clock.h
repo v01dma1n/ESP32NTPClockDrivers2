@@ -137,7 +137,12 @@ private:
     void buildUi();
     void tickWatchFace();
     static void tickTimerCb(lv_timer_t* timer);
-    void updateFaceModeVisibility();
+    // stagedReveal: true when the caller is specifically leaving photo
+    // mode and wants _dialGroup's children hidden then revealed a few
+    // at a time (see _revealNextChild) rather than the normal immediate
+    // digit-row/info-label visibility swap used for every other mode
+    // change (TIME<->TEMPERATURE<->HUMIDITY, entering photo mode).
+    void updateFaceModeVisibility(bool stagedReveal = false);
 
     char _statusBuf[kStatusCells + 1] = {};
     bool _began = false;
@@ -206,6 +211,28 @@ private:
     // it all with a single flag flip instead of tracking every sub-object
     // individually — see buildUi() and updateFaceModeVisibility().
     lv_obj_t* _faceContent = nullptr;
+    // Sub-container of _faceContent holding everything except the digit
+    // row (digit slots/colon slots/_infoLabel stay direct children of
+    // _faceContent) — ring, ticks, gauge, hands, hub, brand/year/date
+    // labels: ~120 objects. Split out so leaving photo mode can reveal
+    // *these* in stages instead of one big first-render pass; see
+    // tickWatchFace()/updateFaceModeVisibility().
+    lv_obj_t* _dialGroup = nullptr;
+    // Post-photo-mode reveal: a top-to-bottom sweep, same direction as
+    // the photo scan-bar but its own speed (see DIAL_REVEAL_SPEED and
+    // tickWatchFace()) and reusing _photoScanBar itself as the visible
+    // wipe line, so leaving photo mode reads as a continuation of the
+    // same scan motion rather than an unrelated effect. Each
+    // _dialGroup child is revealed the moment the sweep passes its
+    // pre-captured on-screen Y (_dialRevealY, indexed to match child
+    // order, filled in at buildUi()-time from each element's actual
+    // geometry) — ticks/gauge segments near the top of the dial appear
+    // before ones near the bottom, matching their real position, not
+    // just creation order.
+    static constexpr int kMaxDialChildren = 150; // headroom above the ~120 actually created
+    int16_t _dialRevealY[kMaxDialChildren] = {};
+    bool _revealActive = false;
+    int16_t _revealScanY = 0;
     lv_obj_t* _photoImg = nullptr;   // sibling of _faceContent, drawn on top
     bool _photoSet = false;          // see setPhotos()
     // Round-robin photo set, see setPhotos(). _photoIndex is the index
@@ -217,11 +244,14 @@ private:
     int _photoIndex = 0;
 
     // CRT-style distortion overlay for photo mode (see tickWatchFace()): a
-    // translucent scan-bar that sweeps top-to-bottom and wraps, plus a
-    // subtle per-tick opacity jitter on _photoImg itself for a flicker
-    // feel. Purely a rendering effect layered on setPhotos()'s images —
-    // the driver still has no opinion on what they depict.
+    // translucent scan-bar that sweeps top-to-bottom, with its own
+    // height/opacity randomized per tick, plus a smaller independent
+    // "noise fleck" bar that flashes near it on some ticks, plus a
+    // subtle per-tick opacity jitter on _photoImg itself for flicker.
+    // Purely a rendering effect layered on setPhotos()'s images — the
+    // driver still has no opinion on what they depict.
     lv_obj_t* _photoScanBar = nullptr;
+    lv_obj_t* _photoNoiseBar = nullptr;
     int16_t _photoScanBarY = 0;
 
     // What time to render each tick; see setTimeProvider(). Not owned —
