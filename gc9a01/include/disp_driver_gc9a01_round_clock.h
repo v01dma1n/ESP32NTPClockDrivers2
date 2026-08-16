@@ -103,6 +103,18 @@ public:
     // branding. Either argument may be nullptr to leave that line as-is.
     void setBrandText(const char* line1, const char* line2);
 
+    // Swaps the programmatic dial (radial-gradient background + bezel
+    // ring + hour/minute tick marks, all drawn from #define'd geometry
+    // in buildUi()) for a static 240x240 RGB565 image instead -- e.g. a
+    // pre-rendered watch-face graphic with its own numerals/bezel baked
+    // in. The driver still draws the hands/gauge/digits/labels in code
+    // on top of it; only the background changes. As with setPhotos(),
+    // the driver has no opinion on the image's content and the caller
+    // owns its storage, which must outlive this driver. Pass nullptr
+    // (the default, if never called) to keep the original programmatic
+    // dial. Must be called before begin() — read once at buildUi()-time.
+    void setDialBackground(const lv_image_dsc_t* img);
+
     // Feeds a value onto the half-circle rate gauge on the left side of
     // the dial (a "how fast is the clock currently running" indicator —
     // generic in the sense that the driver has no idea what "value"
@@ -185,26 +197,44 @@ private:
     int _dateShownMday = -1; // -1: not shown yet (tm_mday is always 1..31)
 
     // Info-row rotation: alternates the digit readout between time,
-    // temperature, humidity, and (if set) the photo every
-    // kFaceModeDurationUs. Hands keep ticking continuously regardless of
-    // mode — see tickWatchFace(). PHOTO replaces the whole dial rather
-    // than just the digit row (see _faceContent/_photoImg below), unlike
-    // TEMPERATURE/HUMIDITY which only swap the info label.
+    // temperature, humidity, and (if set) the photo. Hands keep ticking
+    // continuously regardless of mode — see tickWatchFace(). PHOTO
+    // replaces the whole dial rather than just the digit row (see
+    // _faceContent/_photoImg below), unlike TEMPERATURE/HUMIDITY which
+    // only swap the info label.
     enum class FaceMode { TIME, TEMPERATURE, HUMIDITY, PHOTO };
-    static constexpr int64_t kFaceModeDurationUs = 5 * 1000000; // 5s per mode
-    // Safety fallback only: PHOTO normally exits as soon as the CRT
-    // scan-bar sweep reaches the bottom edge (see tickWatchFace()), not
-    // on a timer, so a photo of any brightness/content still gets a
-    // predictable one-pass "scan" before switching back — this just
-    // bounds how long PHOTO can dwell if that completion check were ever
-    // skipped.
+    // TIME gets a much longer dwell than TEMPERATURE/HUMIDITY: the clock
+    // face is what this device is *for*, so the other rotation modes
+    // (weather readout, photos) should be an occasional accent, not
+    // something competing with it for screen time every few seconds.
+    static constexpr int64_t kTimeModeDurationUs = 30 * 1000000; // 30s
+    static constexpr int64_t kFaceModeDurationUs = 5 * 1000000; // 5s per mode (TEMPERATURE/HUMIDITY only)
+    // Safety fallback only: PHOTO normally exits kPhotoHoldUs after the
+    // CRT scan-bar sweep reaches the bottom edge (see tickWatchFace()),
+    // not on a timer -- this just bounds how long PHOTO can dwell if that
+    // completion check were ever skipped.
     static constexpr int64_t kPhotoModeDurationUs = 10 * 1000000; // 10s
+    // Static hold *after* the scan-out completes (see tickWatchFace()'s
+    // PHOTO block): the sweep runs right from the moment the photo
+    // appears, since the interference effect makes a more dramatic
+    // entrance than a plain cut, then holds the now-clean photo on
+    // screen before switching back. The sweep alone only takes ~1.6s at
+    // PHOTO_SCANBAR_SPEED, too brief to register a photo against a 30s
+    // clock-face dwell (kTimeModeDurationUs) -- roughly a 19:1 ratio.
+    // This hold brings total photo-visible time to ~3.1s, landing close
+    // to the requested ~10:1 clock:photo ratio without slowing down the
+    // scan-out animation itself.
+    static constexpr int64_t kPhotoHoldUs = 1500 * 1000; // 1.5s
     FaceMode _faceMode = FaceMode::TIME;
     int64_t _faceModeSinceUs = 0;
     lv_obj_t* _infoLabel = nullptr;
     float _tempF = 0.0f;
     int _humidity = 0;
     bool _weatherValid = false;
+
+    // See setDialBackground(). Read once at buildUi()-time; nullptr (the
+    // default) keeps the original programmatic gradient+ring+ticks dial.
+    const lv_image_dsc_t* _dialBgImg = nullptr;
 
     // Everything on the dial except the photo (ring/ticks/hands/digits/
     // gauge) lives under this one container so FaceMode::PHOTO can hide
@@ -253,6 +283,12 @@ private:
     lv_obj_t* _photoScanBar = nullptr;
     lv_obj_t* _photoNoiseBar = nullptr;
     int16_t _photoScanBarY = 0;
+    // 0 while the scan-out sweep is still running; set to the timestamp
+    // it finished at once _photoScanBarY passes the bottom edge, so
+    // tickWatchFace() can hold the clean photo on screen for kPhotoHoldUs
+    // before actually leaving PHOTO mode. See kPhotoHoldUs's comment for
+    // why the hold comes after the scan, not before.
+    int64_t _photoScanDoneUs = 0;
 
     // What time to render each tick; see setTimeProvider(). Not owned —
     // the caller (app layer) owns the concrete provider's lifetime.

@@ -124,6 +124,10 @@ void DispDriverGc9a01RoundClock::setBrandText(const char* line1, const char* lin
     }
 }
 
+void DispDriverGc9a01RoundClock::setDialBackground(const lv_image_dsc_t* img) {
+    _dialBgImg = img;
+}
+
 // --- Panel + LVGL bring-up ---------------------------------------------------
 
 void DispDriverGc9a01RoundClock::begin() {
@@ -289,12 +293,17 @@ void DispDriverGc9a01RoundClock::buildUi() {
     // monochrome jump (see dialAccentColor()). The lv_grad_dsc_t must
     // outlive this function (LVGL's style system stores the pointer, not
     // a copy of the struct), hence `static` here rather than a local.
-    static lv_grad_dsc_t s_dialGrad;
-    static const lv_color_t kDialGradStops[2] = { lv_color_hex(0x2E2E2E), lv_color_black() };
-    lv_grad_init_stops(&s_dialGrad, kDialGradStops, nullptr, nullptr, 2);
-    lv_grad_radial_init(&s_dialGrad, CLOCK_CENTER_X, CLOCK_CENTER_Y,
-                         CLOCK_CENTER_X + 116, CLOCK_CENTER_Y, LV_GRAD_EXTEND_PAD);
-    lv_obj_set_style_bg_grad(_faceScreen, &s_dialGrad, 0);
+    // Skipped when a caller-supplied dial background image is in play
+    // (see setDialBackground()) -- that image fully covers the round
+    // face, so this gradient would never actually show through it.
+    if (!_dialBgImg) {
+        static lv_grad_dsc_t s_dialGrad;
+        static const lv_color_t kDialGradStops[2] = { lv_color_hex(0x2E2E2E), lv_color_black() };
+        lv_grad_init_stops(&s_dialGrad, kDialGradStops, nullptr, nullptr, 2);
+        lv_grad_radial_init(&s_dialGrad, CLOCK_CENTER_X, CLOCK_CENTER_Y,
+                             CLOCK_CENTER_X + 116, CLOCK_CENTER_Y, LV_GRAD_EXTEND_PAD);
+        lv_obj_set_style_bg_grad(_faceScreen, &s_dialGrad, 0);
+    }
 
     // Everything below except the photo image parents to _faceContent
     // rather than _faceScreen directly, so FaceMode::PHOTO can hide the
@@ -321,66 +330,82 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_obj_set_pos(_dialGroup, 0, 0);
     lv_obj_clear_flag(_dialGroup, LV_OBJ_FLAG_SCROLLABLE);
 
-    // outer bezel ring — reveal Y is its top edge (radius 116 from
-    // center), so the top-to-bottom post-photo sweep (see
-    // tickWatchFace()) uncovers it almost immediately.
-    _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = (int16_t)(CLOCK_CENTER_Y - 116);
-    lv_obj_t* ring = lv_obj_create(_dialGroup);
-    lv_obj_remove_style_all(ring);
-    lv_obj_set_size(ring, 232, 232);
-    lv_obj_center(ring);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring, 2, 0);
-    lv_obj_set_style_border_color(ring, dialAccentColor(), 0);
+    if (_dialBgImg) {
+        // Static pre-rendered dial background (see setDialBackground())
+        // standing in for the gradient+ring+tick-mark drawing below --
+        // numerals and bezel detail are baked into the image; only the
+        // dynamic hands/gauge/digits/labels are still drawn in code, on
+        // top of it. First child of _dialGroup (so those paint over it)
+        // and first in the reveal sweep (Y=0 -- the "canvas" appears
+        // before the details that sit on top of it).
+        _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = 0;
+        lv_obj_t* dialBg = lv_image_create(_dialGroup);
+        lv_obj_set_size(dialBg, LCD_H_RES, LCD_V_RES);
+        lv_obj_set_pos(dialBg, 0, 0);
+        lv_image_set_src(dialBg, _dialBgImg);
+    } else {
+        // outer bezel ring — reveal Y is its top edge (radius 116 from
+        // center), so the top-to-bottom post-photo sweep (see
+        // tickWatchFace()) uncovers it almost immediately.
+        _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = (int16_t)(CLOCK_CENTER_Y - 116);
+        lv_obj_t* ring = lv_obj_create(_dialGroup);
+        lv_obj_remove_style_all(ring);
+        lv_obj_set_size(ring, 232, 232);
+        lv_obj_center(ring);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, 2, 0);
+        lv_obj_set_style_border_color(ring, dialAccentColor(), 0);
 
-    // hour tick marks — 12/3/6/9 (cardinal) drawn thicker and longer than
-    // the other 8
-    for (int i = 0; i < 12; i++) {
-        bool cardinal = (i % 3 == 0);
-        float rad = i * 30.0f * ((float)M_PI / 180.0f);
-        int16_t r_out = cardinal ? 114 : 112;
-        int16_t r_in = cardinal ? 92 : 98;
-        static lv_point_precise_t tick_pts[12][2];
-        tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
-        tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
-        tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
-        tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
+        // hour tick marks — 12/3/6/9 (cardinal) drawn thicker and longer
+        // than the other 8
+        for (int i = 0; i < 12; i++) {
+            bool cardinal = (i % 3 == 0);
+            float rad = i * 30.0f * ((float)M_PI / 180.0f);
+            int16_t r_out = cardinal ? 114 : 112;
+            int16_t r_in = cardinal ? 92 : 98;
+            static lv_point_precise_t tick_pts[12][2];
+            tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
+            tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
+            tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
+            tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
 
-        // Reveal Y: topmost of the tick's two endpoints, so ticks near
-        // 12 o'clock uncover before ticks near 6 o'clock, matching their
-        // actual position rather than loop/creation order.
-        int16_t tickMinY = (tick_pts[i][0].y < tick_pts[i][1].y) ? tick_pts[i][0].y : tick_pts[i][1].y;
-        _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = tickMinY;
-        lv_obj_t* tick = lv_line_create(_dialGroup);
-        lv_obj_set_pos(tick, 0, 0);
-        lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
-        lv_line_set_points(tick, tick_pts[i], 2);
-        lv_obj_set_style_line_width(tick, cardinal ? 5 : 3, 0);
-        lv_obj_set_style_line_color(tick, dialAccentColor(), 0);
-    }
+            // Reveal Y: topmost of the tick's two endpoints, so ticks near
+            // 12 o'clock uncover before ticks near 6 o'clock, matching
+            // their actual position rather than loop/creation order.
+            int16_t tickMinY = (tick_pts[i][0].y < tick_pts[i][1].y) ? tick_pts[i][0].y : tick_pts[i][1].y;
+            _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = tickMinY;
+            lv_obj_t* tick = lv_line_create(_dialGroup);
+            lv_obj_set_pos(tick, 0, 0);
+            lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
+            lv_line_set_points(tick, tick_pts[i], 2);
+            lv_obj_set_style_line_width(tick, cardinal ? 5 : 3, 0);
+            lv_obj_set_style_line_color(tick, dialAccentColor(), 0);
+        }
 
-    // minute ticks: short, thin marks at the 48 positions between the hour
-    // ticks (skips every 5th, since those already have an hour tick)
-    for (int i = 0; i < 60; i++) {
-        if (i % 5 == 0) continue;
-        float rad = i * 6.0f * ((float)M_PI / 180.0f);
-        int16_t r_out = 112, r_in = 105;
-        static lv_point_precise_t minute_tick_pts[60][2];
-        minute_tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
-        minute_tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
-        minute_tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
-        minute_tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
+        // minute ticks: short, thin marks at the 48 positions between the
+        // hour ticks (skips every 5th, since those already have an hour
+        // tick)
+        for (int i = 0; i < 60; i++) {
+            if (i % 5 == 0) continue;
+            float rad = i * 6.0f * ((float)M_PI / 180.0f);
+            int16_t r_out = 112, r_in = 105;
+            static lv_point_precise_t minute_tick_pts[60][2];
+            minute_tick_pts[i][0].x = CLOCK_CENTER_X + (int16_t)(r_out * sinf(rad));
+            minute_tick_pts[i][0].y = CLOCK_CENTER_Y - (int16_t)(r_out * cosf(rad));
+            minute_tick_pts[i][1].x = CLOCK_CENTER_X + (int16_t)(r_in * sinf(rad));
+            minute_tick_pts[i][1].y = CLOCK_CENTER_Y - (int16_t)(r_in * cosf(rad));
 
-        int16_t tickMinY = (minute_tick_pts[i][0].y < minute_tick_pts[i][1].y)
-            ? minute_tick_pts[i][0].y : minute_tick_pts[i][1].y;
-        _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = tickMinY;
-        lv_obj_t* tick = lv_line_create(_dialGroup);
-        lv_obj_set_pos(tick, 0, 0);
-        lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
-        lv_line_set_points(tick, minute_tick_pts[i], 2);
-        lv_obj_set_style_line_width(tick, 1, 0);
-        lv_obj_set_style_line_color(tick, dialAccentColor(), 0);
+            int16_t tickMinY = (minute_tick_pts[i][0].y < minute_tick_pts[i][1].y)
+                ? minute_tick_pts[i][0].y : minute_tick_pts[i][1].y;
+            _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = tickMinY;
+            lv_obj_t* tick = lv_line_create(_dialGroup);
+            lv_obj_set_pos(tick, 0, 0);
+            lv_obj_set_size(tick, LCD_H_RES, LCD_V_RES);
+            lv_line_set_points(tick, minute_tick_pts[i], 2);
+            lv_obj_set_style_line_width(tick, 1, 0);
+            lv_obj_set_style_line_color(tick, dialAccentColor(), 0);
+        }
     }
 
     // Rate gauge backing half-disc — gray so the black needle (and dark
@@ -513,10 +538,14 @@ void DispDriverGc9a01RoundClock::buildUi() {
     fillIntRamp(minWidths, kHandSegs, 6, 2);
     fillIntRamp(secWidths, kHandSegs, 3, 1);
 
+    // Base-end colors brightened from the original 0x505050/0x8B0000 --
+    // against the art-deco dial's near-black background (see
+    // setDialBackground()) that dark a base read as almost invisible
+    // near the hub, especially before the tip's taper widens it.
     lv_color_t hourColors[kHandSegs], minColors[kHandSegs], secColors[kHandSegs];
-    fillColorRamp(hourColors, kHandSegs, lv_color_hex(0x505050), lv_color_hex(0xE8E8E8));
-    fillColorRamp(minColors, kHandSegs, lv_color_hex(0x505050), lv_color_hex(0xE8E8E8));
-    fillColorRamp(secColors, kHandSegs, lv_color_hex(0x8B0000), lv_color_hex(0xFF6659));
+    fillColorRamp(hourColors, kHandSegs, lv_color_hex(0x9A9A9A), lv_color_hex(0xFFFFFF));
+    fillColorRamp(minColors, kHandSegs, lv_color_hex(0x9A9A9A), lv_color_hex(0xFFFFFF));
+    fillColorRamp(secColors, kHandSegs, lv_color_hex(0xC23B2E), lv_color_hex(0xFF7A66));
 
     // Hands pivot at CLOCK_CENTER and sweep continuously regardless of
     // hidden state (see tickWatchFace()), so — like the gauge needle —
@@ -547,7 +576,13 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_obj_set_style_bg_opa(hub, LV_OPA_COVER, 0);
 
     // digital readout, below center: fixed-position slots (see header comment
-    // on why each digit gets its own fixed-width slot rather than one label)
+    // on why each digit gets its own fixed-width slot rather than one label).
+    // Retired (see updateFaceModeVisibility()'s showDigits comment) and
+    // hidden right away here rather than relying on that function to hide
+    // them -- it's only ever called from tickWatchFace()'s mode-transition
+    // logic, never once at startup, so leaving these at LVGL's default
+    // visible state left the row on screen for the whole first TIME dwell
+    // after every boot.
     _digitSlots[0] = createTimeSlot(_faceContent, TIME_DIGIT_W, -58, nullptr);
     _digitSlots[1] = createTimeSlot(_faceContent, TIME_DIGIT_W, -38, nullptr);
     _colonSlots[0] = createTimeSlot(_faceContent, TIME_COLON_W, -24, ":");
@@ -556,6 +591,8 @@ void DispDriverGc9a01RoundClock::buildUi() {
     _colonSlots[1] = createTimeSlot(_faceContent, TIME_COLON_W, 24, ":");
     _digitSlots[4] = createTimeSlot(_faceContent, TIME_DIGIT_W, 38, nullptr);
     _digitSlots[5] = createTimeSlot(_faceContent, TIME_DIGIT_W, 58, nullptr);
+    for (lv_obj_t* slot : _digitSlots) lv_obj_add_flag(slot, LV_OBJ_FLAG_HIDDEN);
+    for (lv_obj_t* colon : _colonSlots) lv_obj_add_flag(colon, LV_OBJ_FLAG_HIDDEN);
 
     // Info label: same row, shown instead of the digit slots when cycling
     // to temperature/humidity. Hidden until the rotation selects it.
@@ -672,38 +709,78 @@ static void setDigit(lv_obj_t* slot, uint32_t value) {
     lv_label_set_text(slot, buf);
 }
 
+// Bursty CRT-style step size: stutters, jumps, and everything between,
+// rather than a tight jitter band around baseSpeed -- see the PHOTO-mode
+// call site's original comment for why (a dithered constant rate reads
+// as smooth; this doesn't). Shared by the photo-mode distortion overlay
+// and the post-photo dial reveal so leaving photo mode reads as one
+// continuous interference effect, not two different animations stitched
+// together.
+static int16_t crtScanStep(int16_t baseSpeed) {
+    uint32_t r = esp_random() % 100;
+    if (r < 12) return 0; // stutter: hold for a tick
+    if (r < 88) return baseSpeed + (int16_t)(esp_random() % 5) - 2;
+    return baseSpeed * 3 + (int16_t)(esp_random() % 6); // glitch jump
+}
+
+// Randomizes the scan-bar's height/opacity and the separate noise-fleck
+// static, both centered on barY -- see crtScanStep()'s comment.
+static void updateScanBarNoise(lv_obj_t* scanBar, lv_obj_t* noiseBar, int16_t barY) {
+    int16_t barH = PHOTO_SCANBAR_H_MIN
+        + (int16_t)(esp_random() % (PHOTO_SCANBAR_H_MAX - PHOTO_SCANBAR_H_MIN + 1));
+    lv_obj_set_height(scanBar, barH);
+    lv_obj_set_pos(scanBar, 0, barY);
+    lv_obj_set_style_bg_opa(scanBar, (lv_opa_t)(30 + esp_random() % 200), 0);
+
+    if (esp_random() % 100 < 35) {
+        int16_t offset = (int16_t)(esp_random() % 81) - 40; // -40..+40
+        int16_t noiseY = barY + offset;
+        if (noiseY < -4) noiseY = -4;
+        if (noiseY > LCD_V_RES) noiseY = LCD_V_RES;
+        lv_obj_set_height(noiseBar, 1 + (int16_t)(esp_random() % 4));
+        lv_obj_set_pos(noiseBar, 0, noiseY);
+        lv_obj_set_style_bg_opa(noiseBar, (lv_opa_t)(40 + esp_random() % 180), 0);
+        lv_obj_clear_flag(noiseBar, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(noiseBar, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void DispDriverGc9a01RoundClock::tickWatchFace() {
     if (!_timeProvider) return; // not wired up yet
 
     // Post-photo-mode reveal (set up by updateFaceModeVisibility(true)):
-    // a top-to-bottom sweep, same direction as the photo scan-bar (but
-    // its own DIAL_REVEAL_SPEED, tuned separately) and reusing that same
-    // object (idle at this point — photo mode has already ended) as the
-    // visible wipe line, so leaving photo mode reads as a continuation
-    // of the same scan motion rather than an unrelated effect. Each
-    // _dialGroup child un-hides the moment the sweep passes its
-    // pre-captured _dialRevealY (set in buildUi()) --
-    // spreads ~120 objects' first-render cost across the sweep instead
-    // of one big pass, in an order that matches their actual on-screen
-    // position (top ticks/labels before bottom ones), not creation order.
+    // a top-to-bottom sweep, same direction as the photo scan-bar and now
+    // sharing its bursty crtScanStep()/updateScanBarNoise() styling (see
+    // their comments) so leaving photo mode reads as a continuation of
+    // the same interference effect rather than a plain, quieter wipe.
+    // Each _dialGroup child un-hides the moment the sweep passes its
+    // pre-captured _dialRevealY (set in buildUi()) -- spreads ~120
+    // objects' first-render cost across the sweep instead of one big
+    // pass, in an order that matches their actual on-screen position
+    // (top ticks/labels before bottom ones), not creation order. The
+    // sweep always runs the full panel height even after every element
+    // has been revealed (previously it stopped the moment the last one
+    // appeared, which was well before the bottom edge and cut the
+    // interference short) so the noisy scan-bar/fleck overlay gets a
+    // full, consistent pass every time.
     if (_revealActive) {
-        _revealScanY += DIAL_REVEAL_SPEED;
-        lv_obj_set_pos(_photoScanBar, 0, _revealScanY);
+        _revealScanY += crtScanStep(DIAL_REVEAL_SPEED);
 
         uint32_t childCnt = lv_obj_get_child_cnt(_dialGroup);
-        bool anyHidden = false;
         for (uint32_t i = 0; i < childCnt; i++) {
             lv_obj_t* child = lv_obj_get_child(_dialGroup, i);
             if (!lv_obj_has_flag(child, LV_OBJ_FLAG_HIDDEN)) continue;
             if (_dialRevealY[i] <= _revealScanY) {
                 lv_obj_clear_flag(child, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                anyHidden = true;
             }
         }
-        if (!anyHidden || _revealScanY > LCD_V_RES) {
+        if (_revealScanY > LCD_V_RES) {
             _revealActive = false;
             lv_obj_add_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            updateScanBarNoise(_photoScanBar, _photoNoiseBar, _revealScanY);
         }
     }
 
@@ -743,64 +820,30 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
                0, GAUGE_NEEDLE_LEN, GAUGE_CENTER_X, GAUGE_CENTER_Y);
 
     // CRT distortion overlay, only worth animating while photo mode is
-    // actually visible: a scan-bar that sweeps top->bottom once, plus a
-    // subtle per-tick opacity jitter on the photo itself for flicker.
-    // esp_random() is the hardware RNG -- cheap, no seeding needed. The
-    // sweep reaching the bottom edge is what ends photo mode (see below)
-    // rather than looping — one pass, then straight back to the clock
-    // face, not a repeating scan.
+    // actually visible: a scan-bar sweeps top->bottom right from the
+    // moment the photo appears (more dramatic than a plain cut to a
+    // clean image), with a subtle per-tick opacity jitter on the photo
+    // itself for flicker; esp_random() is the hardware RNG -- cheap, no
+    // seeding needed. Once the sweep reaches the bottom edge, the photo
+    // holds clean on screen for kPhotoHoldUs before actually leaving
+    // photo mode -- see _photoScanDoneUs's comment.
     if (_faceMode == FaceMode::PHOTO) {
-        // Bursty step size rather than a tight jitter band around
-        // PHOTO_SCANBAR_SPEED -- independent small +/-2 noise every
-        // tick still averages out to a visually constant rate (same
-        // reason a dithered signal reads as smooth), so instead this
-        // mixes in occasional stutters (momentary hold) and occasional
-        // jumps (a few ticks' worth of travel at once) for a genuinely
-        // uneven, flaky-vertical-hold CRT feel.
-        uint32_t r = esp_random() % 100;
-        int16_t step;
-        if (r < 12) {
-            step = 0; // stutter: hold for a tick
-        } else if (r < 88) {
-            step = PHOTO_SCANBAR_SPEED + (int16_t)(esp_random() % 5) - 2; // 2-6
-        } else {
-            step = PHOTO_SCANBAR_SPEED * 3 + (int16_t)(esp_random() % 6); // 12-17, a glitch jump
-        }
-        _photoScanBarY += step;
-        if (_photoScanBarY > LCD_V_RES) {
+        if (_photoScanDoneUs == 0) {
+            _photoScanBarY += crtScanStep(PHOTO_SCANBAR_SPEED);
+            if (_photoScanBarY > LCD_V_RES) {
+                lv_obj_add_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_set_style_image_opa(_photoImg, 255, 0);
+                _photoScanDoneUs = esp_timer_get_time();
+            } else {
+                updateScanBarNoise(_photoScanBar, _photoNoiseBar, _photoScanBarY);
+                uint8_t opa = 255 - (uint8_t)(esp_random() % 70);
+                lv_obj_set_style_image_opa(_photoImg, opa, 0);
+            }
+        } else if (esp_timer_get_time() - _photoScanDoneUs >= kPhotoHoldUs) {
             _faceMode = FaceMode::TIME;
             _faceModeSinceUs = esp_timer_get_time();
             updateFaceModeVisibility(/*stagedReveal=*/true);
-        } else {
-            // Randomize the bar's own height and opacity every tick too
-            // -- a band that's always the same shape/strength still
-            // reads as a "regular" object even while its position jumps
-            // around. Height varies independently of step size.
-            int16_t barH = PHOTO_SCANBAR_H_MIN
-                + (int16_t)(esp_random() % (PHOTO_SCANBAR_H_MAX - PHOTO_SCANBAR_H_MIN + 1));
-            lv_obj_set_height(_photoScanBar, barH);
-            lv_obj_set_pos(_photoScanBar, 0, _photoScanBarY);
-            lv_obj_set_style_bg_opa(_photoScanBar, (lv_opa_t)(30 + esp_random() % 200), 0);
-
-            // Noise fleck: shown on ~35% of ticks at a random offset
-            // near the main bar (can land above or below it), random
-            // thin height and opacity -- scattered static rather than a
-            // second clean band.
-            if (esp_random() % 100 < 35) {
-                int16_t offset = (int16_t)(esp_random() % 81) - 40; // -40..+40
-                int16_t noiseY = _photoScanBarY + offset;
-                if (noiseY < -4) noiseY = -4;
-                if (noiseY > LCD_V_RES) noiseY = LCD_V_RES;
-                lv_obj_set_height(_photoNoiseBar, 1 + (int16_t)(esp_random() % 4));
-                lv_obj_set_pos(_photoNoiseBar, 0, noiseY);
-                lv_obj_set_style_bg_opa(_photoNoiseBar, (lv_opa_t)(40 + esp_random() % 180), 0);
-                lv_obj_clear_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
-            }
-
-            uint8_t opa = 255 - (uint8_t)(esp_random() % 70);
-            lv_obj_set_style_image_opa(_photoImg, opa, 0);
         }
     }
 
@@ -809,7 +852,10 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     // reading has actually succeeded at least once; skips photo the same
     // way until setPhotos() has actually been given at least one image.
     int64_t faceModeNowUs = esp_timer_get_time();
-    int64_t modeDurationUs = (_faceMode == FaceMode::PHOTO) ? kPhotoModeDurationUs : kFaceModeDurationUs;
+    int64_t modeDurationUs;
+    if (_faceMode == FaceMode::PHOTO) modeDurationUs = kPhotoModeDurationUs;
+    else if (_faceMode == FaceMode::TIME) modeDurationUs = kTimeModeDurationUs;
+    else modeDurationUs = kFaceModeDurationUs;
     if (faceModeNowUs - _faceModeSinceUs > modeDurationUs) {
         _faceModeSinceUs = faceModeNowUs;
         bool wasPhoto = (_faceMode == FaceMode::PHOTO);
@@ -863,10 +909,14 @@ void DispDriverGc9a01RoundClock::updateFaceModeVisibility(bool stagedReveal) {
         // Reset the distortion overlay so every entry into photo mode
         // starts the same way: full brightness, scan-bar off the top
         // edge ready to sweep down, noise fleck hidden until the first
-        // tick decides whether to show it — see tickWatchFace().
+        // tick decides whether to show it — see tickWatchFace(). The
+        // scan-out runs right away (see kPhotoHoldUs's comment for why
+        // the hold comes after it instead), so _photoScanDoneUs resets
+        // to "not done yet" here too.
         lv_obj_set_style_image_opa(_photoImg, 255, 0);
         _photoScanBarY = -PHOTO_SCANBAR_H_MAX;
         lv_obj_set_pos(_photoScanBar, 0, _photoScanBarY);
+        _photoScanDoneUs = 0;
         lv_obj_add_flag(_photoNoiseBar, LV_OBJ_FLAG_HIDDEN);
         // Cancel any reveal still in progress from a previous exit —
         // harmless to let it keep running underneath the (opaque) photo
@@ -904,7 +954,12 @@ void DispDriverGc9a01RoundClock::updateFaceModeVisibility(bool stagedReveal) {
         lv_obj_add_flag(_photoScanBar, LV_OBJ_FLAG_HIDDEN);
     }
 
-    bool showDigits = (_faceMode == FaceMode::TIME);
+    // Digital HH:MM:SS readout is retired -- the analog hands already
+    // show time, and the digit row competed for space/attention with
+    // the dial background. Slots stay allocated (setDigit() in
+    // tickWatchFace() keeps refreshing their now-hidden content) rather
+    // than ripping the layout out, so re-enabling is a one-line flip.
+    bool showDigits = false;
     for (lv_obj_t* slot : _digitSlots) {
         if (showDigits) lv_obj_clear_flag(slot, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(slot, LV_OBJ_FLAG_HIDDEN);
@@ -914,7 +969,13 @@ void DispDriverGc9a01RoundClock::updateFaceModeVisibility(bool stagedReveal) {
         else lv_obj_add_flag(colon, LV_OBJ_FLAG_HIDDEN);
     }
 
-    if (showDigits) {
+    // At this point _faceMode is TEMPERATURE or HUMIDITY (TIME took the
+    // showDigits branch above, PHOTO already returned at the top of this
+    // function). The rotation in tickWatchFace() already skips both
+    // modes while !_weatherValid, so this check should be unreachable in
+    // practice -- kept anyway as a second line of defense against ever
+    // showing a stale/zeroed "0% RH" if that gate is ever loosened.
+    if (showDigits || !_weatherValid) {
         lv_obj_add_flag(_infoLabel, LV_OBJ_FLAG_HIDDEN);
         return;
     }
