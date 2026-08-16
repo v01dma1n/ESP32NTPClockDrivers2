@@ -515,14 +515,19 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_label_set_text(yearLabel, _brandLine2);
     lv_obj_align(yearLabel, LV_ALIGN_CENTER, 0, -28);
 
-    // Day/date complication ("MON 15"), 3 o'clock position — inside the
-    // tick ring (which starts at radius 92-98), clear of the brand/year
-    // text above and the time/temp/humidity row below.
+    // Date complication: sits inside the dial background's faceted
+    // "crystal" cutout at the 3 o'clock position (see
+    // setDialBackground()) -- a light, glassy window bounded roughly
+    // x:[170,222] y:[95,145] in the 240x240 output, so offset (76, 0)
+    // centers text in it. Dark text, not the white used everywhere else
+    // on the dial, since the crystal itself is near-white -- white text
+    // would wash out against it. Font is montserrat_34, 2.5x the size it
+    // started at (14) per explicit request, sized to fill the window.
     _dialRevealY[lv_obj_get_child_cnt(_dialGroup)] = (int16_t)CLOCK_CENTER_Y;
     _dateLabel = lv_label_create(_dialGroup);
-    lv_obj_set_style_text_font(_dateLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(_dateLabel, lv_color_white(), 0);
-    lv_obj_align(_dateLabel, LV_ALIGN_CENTER, 68, 0);
+    lv_obj_set_style_text_font(_dateLabel, &lv_font_montserrat_34, 0);
+    lv_obj_set_style_text_color(_dateLabel, lv_color_hex(0x202020), 0);
+    lv_obj_align(_dateLabel, LV_ALIGN_CENTER, 76, 0);
 
     // widths taper base -> mid -> tip; see setTaperedHand() for the
     // matching radius breakpoints used each tick. Widths and colors ramp
@@ -791,12 +796,14 @@ void DispDriverGc9a01RoundClock::tickWatchFace() {
     uint32_t h = (uint32_t)(dt.hour % 12);
     uint32_t sec_whole = (uint32_t)dt.second;
 
-    // Day/date complication — only touches the label once per day.
+    // Date complication — only touches the label once per day. Just the
+    // day-of-month number (no weekday, no month), matching a mechanical
+    // watch's date window -- see the dial background's "crystal" cutout
+    // (setDialBackground()) that it now sits inside.
     if (dt.mday != _dateShownMday) {
         _dateShownMday = dt.mday;
-        static const char* kDayNames[7] = { "SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT" };
-        char dateBuf[12];
-        snprintf(dateBuf, sizeof(dateBuf), "%s %d", kDayNames[dt.wday], dt.mday);
+        char dateBuf[4];
+        snprintf(dateBuf, sizeof(dateBuf), "%d", dt.mday);
         lv_label_set_text(_dateLabel, dateBuf);
     }
 
