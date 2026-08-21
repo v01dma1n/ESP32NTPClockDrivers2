@@ -1085,6 +1085,15 @@ void DispDriverGc9a01RoundClock::writeDisplay() {
     std::memcpy(text, _statusBuf, kStatusCells);
     text[kStatusCells] = '\0';
 
+    // The character-grid animations (StaticTextAnimation etc.) pad every
+    // unused cell with spaces -- harmless on segment glass, where blank
+    // cells just need clearing, but on this center-aligned wrapped label
+    // that trailing run of spaces becomes part of the last visual line's
+    // width, so lv_label's centering shifts the visible text left of true
+    // center. Trim it before handing the string to LVGL.
+    size_t len = std::strlen(text);
+    while (len > 0 && text[len - 1] == ' ') text[--len] = '\0';
+
     lvgl_port_lock(0);
     lv_label_set_text(_statusLabel, text);
     lvgl_port_unlock();

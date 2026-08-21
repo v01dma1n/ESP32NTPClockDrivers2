@@ -144,7 +144,12 @@ public:
     void setPhotos(const lv_image_dsc_t* const* imgs, int count);
 
 private:
-    static constexpr int kStatusCells = 32;
+    // 32 was fine for the original one-line status text ("JOIN WIFI: ...",
+    // "NO WIFI"), but the startup splash is a 3-line "\n"-joined string
+    // (app name / author / year) that StaticTextAnimation/
+    // ScrollingTextAnimation pad-or-truncate to exactly this many cells --
+    // 40 gives room for that without truncating.
+    static constexpr int kStatusCells = 40;
 
     void buildUi();
     void tickWatchFace();
