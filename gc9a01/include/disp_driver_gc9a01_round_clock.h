@@ -103,6 +103,16 @@ public:
     // branding. Either argument may be nullptr to leave that line as-is.
     void setBrandText(const char* line1, const char* line2);
 
+    // Small, dim, permanent footer on the boot screen (e.g. a firmware
+    // build/version string) -- separate from the status text driven via
+    // setChar()/writeDisplay() (which cycles through "JOIN WIFI: ...",
+    // "NO WIFI", etc.) so it stays visible for the whole boot sequence
+    // instead of disappearing whenever that text changes. The driver has
+    // no opinion on what the string means (mirrors setBrandText()); pass
+    // nullptr or never call this to leave it blank. Must be called before
+    // begin() -- read once at buildUi()-time, not re-read per tick.
+    void setVersionTag(const char* text);
+
     // Swaps the programmatic dial (radial-gradient background + bezel
     // ring + hour/minute tick marks, all drawn from #define'd geometry
     // in buildUi()) for a static 240x240 RGB565 image instead -- e.g. a
@@ -148,7 +158,9 @@ private:
     // "NO WIFI"), but the startup splash is a 3-line "\n"-joined string
     // (app name / author / year) that StaticTextAnimation/
     // ScrollingTextAnimation pad-or-truncate to exactly this many cells --
-    // 40 gives room for that without truncating.
+    // 40 gives room for that without truncating. The firmware version
+    // lives in its own separate label now (see setVersionTag()), not this
+    // buffer.
     static constexpr int kStatusCells = 40;
 
     void buildUi();
@@ -169,8 +181,12 @@ private:
     char _brandLine1[24] = {};
     char _brandLine2[8] = {};
 
+    // See setVersionTag().
+    char _versionTag[32] = {};
+
     lv_obj_t* _bootScreen = nullptr;
     lv_obj_t* _statusLabel = nullptr;
+    lv_obj_t* _versionLabel = nullptr;
     lv_obj_t* _faceScreen = nullptr;
 
     // Watch face objects/state (see gc9a01_round_display_test for the

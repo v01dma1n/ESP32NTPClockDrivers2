@@ -128,6 +128,12 @@ void DispDriverGc9a01RoundClock::setDialBackground(const lv_image_dsc_t* img) {
     _dialBgImg = img;
 }
 
+void DispDriverGc9a01RoundClock::setVersionTag(const char* text) {
+    if (!text) return;
+    std::strncpy(_versionTag, text, sizeof(_versionTag) - 1);
+    _versionTag[sizeof(_versionTag) - 1] = '\0';
+}
+
 // --- Panel + LVGL bring-up ---------------------------------------------------
 
 void DispDriverGc9a01RoundClock::begin() {
@@ -288,6 +294,25 @@ void DispDriverGc9a01RoundClock::buildUi() {
     lv_obj_set_style_text_color(_statusLabel, lv_color_white(), 0);
     lv_obj_center(_statusLabel);
     lv_label_set_text(_statusLabel, "");
+
+    // Small, dim, permanent version footer -- see setVersionTag(). Below
+    // and smaller than _statusLabel so it reads as a footnote, not
+    // competing with the actual boot status text above it. Explicit
+    // width + wrap (like _statusLabel) rather than letting a long string
+    // run past the round glass: git describe grows with commits-since-tag
+    // (e.g. "v1.1.0-12-g1a2b3c4-dirty"), and re-tagging -- the whole
+    // point of adopting this scheme -- resets that back to short, but it
+    // shouldn't clip in the meantime. y=58 (vs _statusLabel's y=0)
+    // leaves enough of the circle's chord width for a two-line wrap
+    // without the second line crowding the bezel.
+    _versionLabel = lv_label_create(_bootScreen);
+    lv_obj_set_width(_versionLabel, 160);
+    lv_label_set_long_mode(_versionLabel, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(_versionLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(_versionLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(_versionLabel, lv_color_hex(0x808080), 0);
+    lv_obj_align(_versionLabel, LV_ALIGN_CENTER, 0, 58);
+    lv_label_set_text(_versionLabel, _versionTag);
 
     // --- watch face: its own screen, loaded via showClockFace() ---
     _faceScreen = lv_obj_create(nullptr);
