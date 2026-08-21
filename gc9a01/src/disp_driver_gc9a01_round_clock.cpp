@@ -189,15 +189,13 @@ void DispDriverGc9a01RoundClock::begin() {
     // (not via a separate esp_lcd_panel_mirror() call before
     // lvgl_port_add_disp()) because lvgl_port_add_disp() re-applies orientation
     // from this struct internally, silently overwriting anything set earlier.
-    // KNOWN ISSUE: on the board with no dedicated RST line (PIN_LCD_RST ==
-    // NC), this has been observed to render mirrored on some true cold
-    // power-ons despite this same setting/command sequence being reliable
-    // on a warm (EN) reset. A pre-init settle delay and a late redundant
-    // esp_lcd_panel_mirror() re-issue were both tried and neither changed
-    // the behavior, so it's not a simple timing/re-issue fix — root cause
-    // still open. Deprioritized in favor of feature work; revisit with a
-    // logic analyzer or a different panel sample if it resurfaces.
-    disp_cfg.rotation.mirror_x = false;
+    // The board attached 2026-08-21 needs mirror_x=true, confirmed stable
+    // across 4 consecutive true power-cycles (unplug/replug, not just an
+    // EN/software reset). An earlier false reading of "false" as correct
+    // came from testing only across warm resets, which never actually
+    // power-cycled the panel -- a true POR is the only valid test for this
+    // setting on RST-less GC9A01 boards.
+    disp_cfg.rotation.mirror_x = true;
     disp_cfg.flags.buff_dma = true;
     disp_cfg.flags.swap_bytes = true;
     lv_disp_t* disp = lvgl_port_add_disp(&disp_cfg);
