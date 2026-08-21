@@ -184,11 +184,12 @@ void DispDriverGc9a01RoundClock::begin() {
     disp_cfg.vres = LCD_V_RES;
     disp_cfg.monochrome = false;
     disp_cfg.color_format = LV_COLOR_FORMAT_RGB565;
-    // This physical panel needs a horizontal mirror to render right-reading —
-    // must be set here (not via a separate esp_lcd_panel_mirror() call before
+    // Whether this physical panel needs a horizontal mirror to render
+    // right-reading varies by GC9A01 module/wiring batch — must be set here
+    // (not via a separate esp_lcd_panel_mirror() call before
     // lvgl_port_add_disp()) because lvgl_port_add_disp() re-applies orientation
     // from this struct internally, silently overwriting anything set earlier.
-    disp_cfg.rotation.mirror_x = true;
+    disp_cfg.rotation.mirror_x = false;
     disp_cfg.flags.buff_dma = true;
     disp_cfg.flags.swap_bytes = true;
     lv_disp_t* disp = lvgl_port_add_disp(&disp_cfg);
